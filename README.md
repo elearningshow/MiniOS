@@ -2,7 +2,7 @@
 
 ![MiniOS desktop](source/wallpaper/mini-os-bg.jpg)
 
-MiniOS is a live USB system for an old 32-bit PC, built on Tiny Core Linux 16.2. It starts from the stick and does not install onto the internal hard drive. It was built for a Gateway MA3: one 32-bit core, about 441 MB of working memory, and no hardware video decoder.
+MiniOS Xperience is a live USB system for an old 32-bit PC, built on Tiny Core Linux 16.2. It starts from the stick and does not install onto the internal hard drive. It was built for a Gateway MA3: one 32-bit core, about 441 MB of working memory, and no hardware video decoder.
 
 ## Download
 
