@@ -1,0 +1,7 @@
+out/*.img
+out/*.img.copy
+*.copy
+*.tmp
+Thumbs.db
+.DS_Store
+!out/.gitkeep
