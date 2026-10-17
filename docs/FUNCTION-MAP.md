@@ -35,7 +35,7 @@ A change in `minios-player-bar.cxx` does not change the laptop until someone rec
 
 ```
 Tiny Core init
-  /etc/motd                         "MiniOS live desktop" plus the app names
+  /etc/motd                         "Loading MiniOS" plus the app names
   bootsync.sh
       minios-fix-tcedir             /etc/sysconfig/tcedir must be a symlink to the USB cde/
       minios-xvesa-install          Xvesa -nozap before the desktop
