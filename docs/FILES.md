@@ -1,6 +1,6 @@
 # Files in this package
 
-The table "What is in this folder" in the top-level `README.md` is the guide to this package. It names each folder and says what it is for.
+The table "What is in this folder" in `docs/DEVELOPING.md` is the guide to this package. It names each folder and says what it is for.
 
 For an exact, current list of every file, run this from the repository folder:
 
