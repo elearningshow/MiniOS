@@ -134,7 +134,7 @@ The next image caption is MiniOS-TC-v0.2.261. The volume name is MINIOS-2261. To
 
 Several player files are locked to a checksum inside the bake script. If you change one of those files, the bake stops until the matching checksum in `bake/build-next-image.sh` is updated in the same edit. The locks exist so a dock change cannot quietly replace the YouTube or TikTok player. The dock script, the bar starter, the boot scripts, and the Streaming programs are the files a menu or Streaming change normally edits.
 
-MiniOS-TC-v0.2.260 has been booted and tested on the Gateway MA3. The desktop and most programs work, but the Spreadsheet button can fail to open. The same problem is on the v0.2.261-edit test build. See `docs/KNOWN-ISSUES.md` for a reinstall fix.
+MiniOS-TC-v0.2.260 has been booted and tested on the Gateway MA3. The desktop and most programs work, but the Spreadsheet button can fail to open. The same problem is on the v0.2.261-edit test build. It is a known issue and has not been fixed. See `docs/KNOWN-ISSUES.md`.
 
 ## How the stick is built
 
