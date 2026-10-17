@@ -106,6 +106,7 @@ YouTube and TikTok do not share a player, a downloader, or temporary-file names.
 | `docs/FUNCTION-MAP.md` | How the programs call each other. Parts were written for older images, so the file in `source/scripts/` wins. |
 | `docs/FILES.md` | Points to this table. Run `git ls-files` for the full list. |
 | `docs/RULES.md` | Rules for a change that still runs on the Gateway. |
+| `docs/KNOWN-ISSUES.md` | Problems that have been seen and are not fixed yet. |
 | `out/` | Empty until a next bake. The new image is written here. |
 
 `docs/WHAT-MINIOS-CHANGED.md` explains the Tiny Core changes. `docs/RULES.md` is the short list to read before an edit.
@@ -133,7 +134,7 @@ The next image caption is MiniOS-TC-v0.2.261. The volume name is MINIOS-2261. To
 
 Several player files are locked to a checksum inside the bake script. If you change one of those files, the bake stops until the matching checksum in `bake/build-next-image.sh` is updated in the same edit. The locks exist so a dock change cannot quietly replace the YouTube or TikTok player. The dock script, the bar starter, the boot scripts, and the Streaming programs are the files a menu or Streaming change normally edits.
 
-MiniOS-TC-v0.2.260 has been booted and tested on the Gateway MA3, and everything worked.
+MiniOS-TC-v0.2.260 has been booted and tested on the Gateway MA3, and everything worked. A test build, v0.2.261-edit, was baked from it and booted. On that build the Spreadsheet button fails, so it is not the image to flash. See `docs/KNOWN-ISSUES.md`.
 
 ## How the stick is built
 
