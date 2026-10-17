@@ -2,6 +2,10 @@
 
 ![MiniOS desktop](source/wallpaper/mini-os-bg.jpg)
 
+## Download
+
+Get the stick image from the [v0.2.260 release page](https://github.com/elearningshow/MiniOS/releases/tag/v0.2.260). Download `MiniOS-TC-v0.2.260-bar.img` and `SHA256SUMS.txt` from there. The copy of the image inside this repository is a Git LFS file and is meant for people who clone the project.
+
 This folder is the MiniOS package. Uploading this folder, or forking only this folder, is enough to write the USB stick and to change the project. The rest of a development tree is not required.
 
 MiniOS is a live USB system for an old 32-bit PC. It starts from the stick and does not install onto the internal hard drive. The system it was built for is a Gateway MA3: one 32-bit core, about 441 MB of working memory, a 512 MB swap file, and no hardware video decoder. A change that needs a second core, 64-bit code, a hardware decoder, or a large copy in memory will not run on that machine.
@@ -37,9 +41,9 @@ Use a USB stick of at least 1 GB. A 2 GB stick leaves a little room. Do not sele
 
 Rufus on Windows:
 
-1. Download Rufus from https://rufus.ie and start it as administrator.
+1. Download `MiniOS-TC-v0.2.260-bar.img` from the release page above. Download Rufus from https://rufus.ie and start it as administrator.
 2. Insert the USB stick and select that stick.
-3. Click SELECT and choose `MiniOS-TC-v0.2.260-bar.img`.
+3. Click SELECT and choose the `MiniOS-TC-v0.2.260-bar.img` you downloaded.
 4. When Rufus asks how to write the image, choose **DD Image**. Do not choose ISO mode.
 5. Click START and wait until Rufus says READY.
 6. If Windows then asks to format the stick, click Cancel.
@@ -151,7 +155,7 @@ A new image is made by copying this image and replacing files inside `core.gz` a
 
 ## Git LFS
 
-The image is stored with Git LFS (`*.img` is listed in `.gitattributes`). Install Git LFS before cloning or pushing, or the image downloads as a small pointer file. The other files are small enough for a normal commit. `source/tcz-office/` is about 55 MB spread across many files.
+The image is stored with Git LFS (`*.img` is listed in `.gitattributes`). Install Git LFS before cloning or pushing, or the image downloads as a small pointer file. The other files are small enough for a normal commit. `source/tcz-office/` is about 55 MB spread across many files. To only write a stick, download the image from the release page instead of cloning, because Git LFS downloads count against a monthly bandwidth quota on GitHub.
 
 ## Left out on purpose
 
@@ -163,4 +167,4 @@ The image is stored with Git LFS (`*.img` is listed in `.gitattributes`). Instal
 
 ## Licenses
 
-Tiny Core Linux and the extensions in `source/tcz-office/` keep the licenses they shipped with. The MiniOS programs in `source/scripts/` and `source/fltube-src/` are the project files for this package. This folder does not add a new license on top of Tiny Core.
+The MiniOS programs and documents in this repository are under the MIT License. See the `LICENSE` file. Tiny Core Linux and the extensions in `source/tcz-office/` keep the licenses they shipped with.
