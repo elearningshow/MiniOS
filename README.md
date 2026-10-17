@@ -134,7 +134,7 @@ The next image caption is MiniOS-TC-v0.2.261. The volume name is MINIOS-2261. To
 
 Several player files are locked to a checksum inside the bake script. If you change one of those files, the bake stops until the matching checksum in `bake/build-next-image.sh` is updated in the same edit. The locks exist so a dock change cannot quietly replace the YouTube or TikTok player. The dock script, the bar starter, the boot scripts, and the Streaming programs are the files a menu or Streaming change normally edits.
 
-This PC has no desktop, so the package was not booted here. The Gateway has not been reported on v0.2.260 in the notes that came with the image.
+MiniOS-TC-v0.2.260 has been booted and tested on the Gateway MA3, and everything worked.
 
 ## How the stick is built
 
