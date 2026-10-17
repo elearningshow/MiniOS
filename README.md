@@ -50,11 +50,11 @@ A row of buttons runs along the bottom.
 | YouTube | Search YouTube and play a result. |
 | TikTok | Search TikTok and play a result. |
 | Streaming | Search free radio and TV stations. |
-| Nightly | Web browser. JavaScript starts off. Click here on a heavy page to turn it on. |
+| Nightly | Web browser. JavaScript starts off. |
 | Text Browser | A text-only browser. |
 | Media Player | Play a local video or music file. |
 | Games | GTK Tetris and LBreakout2. The first use downloads about 2.6 MB. |
-| AI | A chat window. It needs the network. |
+| AI | A chat window. It needs an Internet connection. |
 | Document | AbiWord word processor. |
 | Spreadsheet | Gnumeric. Known issue, see below. |
 | Wifi | Connect to a wireless network (Broadcom 4318). |
