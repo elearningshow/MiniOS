@@ -104,11 +104,11 @@ YouTube and TikTok do not share a player, a downloader, or temporary-file names.
 | `bake/build-next-image.sh` | Builds the next image from this folder. |
 | `docs/WHAT-MINIOS-CHANGED.md` | What MiniOS added to Tiny Core 16.2. |
 | `docs/FUNCTION-MAP.md` | How the programs call each other. Some call lists are older than this image. The file in `source/scripts/` wins. |
-| `docs/FILES.md` | A list of the files in this package. |
+| `docs/FILES.md` | Points to this table. Run `git ls-files` for the full list. |
 | `docs/RULES.md` | Rules for a change that still runs on the Gateway. |
 | `out/` | Empty until a next bake. The new image is written here. |
 
-`docs/FILES.md` lists every file. `docs/WHAT-MINIOS-CHANGED.md` explains the Tiny Core changes. `docs/RULES.md` is the short list to read before an edit.
+`docs/WHAT-MINIOS-CHANGED.md` explains the Tiny Core changes. `docs/RULES.md` is the short list to read before an edit.
 
 ## Change the project and bake the next image
 
