@@ -146,18 +146,9 @@ Tiny Core’s own files and the MiniOS programs live in one image.
 
 A new image is made by copying this image and replacing files inside `core.gz` and `wbar.tcz`. It is not made by recompiling Tiny Core from the upstream ISO. The upstream 16.2 files are at http://tinycorelinux.net/16.x/x86/ . The kernel sources are under `release/src/` on that site. Tiny Core’s GitHub group, https://github.com/tinycorelinux , is a set of small repositories. It is not this system, and this project does not fork it.
 
-## Upload this folder to GitHub
+## Git LFS
 
-GitHub rejects a normal file larger than 100 MB. The image is 864 MB, so the image has to be stored with Git LFS before a push.
-
-```
-git init
-git lfs install
-git add .
-git commit -m "MiniOS-TC-v0.2.260 package"
-```
-
-`*.img` is already listed in `.gitattributes` for Git LFS. Git LFS must be installed on the machine that pushes, and the GitHub repository must have LFS enabled. The other files in this folder are small enough for a normal commit. `source/tcz-office/` is about 55 MB spread across many files.
+The image is stored with Git LFS (`*.img` is listed in `.gitattributes`). Install Git LFS before cloning or pushing, or the image downloads as a small pointer file. The other files are small enough for a normal commit. `source/tcz-office/` is about 55 MB spread across many files.
 
 ## Left out on purpose
 
