@@ -6,7 +6,7 @@ Problems that have been seen and are not fixed yet.
 
 Status: open. Seen on 2026-10-17 on `out/MiniOS-TC-v0.2.261-edit.img`, which `bake/build-next-image.sh` built from the packaged v0.2.260 image. Tested on the Gateway MA3.
 
-What happens: click Spreadsheet. The window tries to open and then closes. Document (AbiWord) and the other buttons work.
+What happens: click Spreadsheet. The window tries to open and then closes. Document (AbiWord) and the other buttons work. Running `gnumeric` alone from a terminal gives an `input/output error`. Running `tce-load` on it says the package is already installed.
 
 Messages seen on the screen or in the log:
 
@@ -15,29 +15,70 @@ Messages seen on the screen or in the log:
 - a Gnumeric `input/output error`
 - a `loop-mount` line near the bottom of the output
 
-What the messages mean, from `source/scripts/minios-load-tcz`: the script first runs Tiny Core `tce-load` on `gnumeric.tcz`, which also loads every package it depends on. When that fails, the script logs `tce-load failed ... - loop-mount` and mounts `gnumeric.tcz` on its own, without `goffice`, `gtk3`, `libgsf` and the other packages it needs. Gnumeric then starts without its libraries and exits.
+What the messages mean, from `source/scripts/minios-load-tcz`: the script first runs Tiny Core `tce-load` on `gnumeric.tcz`, which also loads every package it depends on. When that fails, the script logs `tce-load failed ... - loop-mount` and mounts `gnumeric.tcz` on its own, without `goffice`, `gtk3`, `libgsf` and the other packages it needs. That leftover mount is probably why `tce-load` later says "already installed". It does not mean Gnumeric works.
 
 Not known yet:
 
 - why `tce-load` fails. `xvid-dev.tcz` and `alsa.tcz` are not named in the files that were read, and Spreadsheet has no entry in `source/scripts/minios-appkit`.
 - which `.dep` file names `xvid-dev.tcz`.
+- whether `gnumeric.tcz` on the stick is damaged (an input/output error on the program itself points that way), or whether the stick is failing, or whether the 441 MB of RAM is the limit.
 - whether the packaged v0.2.260 image shows the same failure.
 
-Checks to run on a PC with WSL (as root), with the new image mounted:
+Possible workaround: see the reinstall steps below. They have not been tested and are not confirmed to work.
+
+### Find out what is wrong first
+
+On the stick, after a fresh reboot, open a terminal and run:
 
 ```
-mkdir -p /mnt/img
-mount -o loop,ro,offset=1048576 out/MiniOS-TC-v0.2.261-edit.img /mnt/img
-cd /mnt/img/cde/optional
-for f in *.md5.txt; do md5sum -c "$f" 2>&1 | grep -v ': OK'; done
-grep -l -e xvid -e alsa *.dep
-cd /
-umount /mnt/img
+free -m
+dmesg | tail -30
+T=$(readlink -f /etc/sysconfig/tcedir)
+cd $T/optional && md5sum -c gnumeric.tcz.md5.txt
+ls -l gnumeric.tcz
 ```
 
-Repeat with `MiniOS-TC-v0.2.260-bar.img` to see whether the packaged image differs. On the stick, read `/tmp/minios-load-tcz.log` and `/tmp/minios-appkit.log` after a failed click.
+- `dmesg` lines with `squashfs`, `loop`, or `I/O error` point to a damaged package or a failing stick.
+- A checksum line that does not say `OK` means `gnumeric.tcz` is damaged.
+- A smaller `gnumeric.tcz` than the copy in `source/tcz-office/` means it was cut short.
+- `Out of memory` in `dmesg` means the RAM is the limit.
 
-Workaround: none known. Use Document for text work.
+### Uninstall and reinstall Gnumeric (untested)
+
+Tiny Core's `tce-load` has no force switch. To force a fresh install, unload the package, delete it, and download it again. This needs the network, so connect Wifi first. Run these as the `tc` user in a terminal.
+
+Uninstall:
+
+```
+T=$(readlink -f /etc/sysconfig/tcedir)
+sudo umount /tmp/tcloop/gnumeric 2>/dev/null
+rm -f $T/optional/gnumeric.tcz*
+```
+
+Reinstall and start it:
+
+```
+tce-load -wi gnumeric.tcz
+df -h $T
+gnumeric
+```
+
+To also replace every package Gnumeric depends on, run this after the uninstall step and before the reinstall step:
+
+```
+for p in $(cat $T/optional/gnumeric.tcz.dep); do sudo umount /tmp/tcloop/${p%.tcz} 2>/dev/null; rm -f $T/optional/$p*; done
+```
+
+Run the dependency step before deleting the `.dep` file, or read the list into a variable first. Because the uninstall step above removes `gnumeric.tcz.dep`, do the dependency loop first if you want both.
+
+Cautions:
+
+- Do this on a spare copy of the stick. Keep a v0.2.260 stick untouched as the fallback.
+- The FAT partition was already close to its 85% limit. Check `df -h` before and after. Downloaded `-dev` packages can fill it.
+- Whether downloaded files stay on the stick after a reboot has not been confirmed. Check with `ls $T/optional/gnumeric.tcz` after rebooting.
+- If the same input/output error comes back with a freshly downloaded file, the cause is more likely the stick or the mount than the package. Try another stick.
+
+A lasting repair belongs in the repo: put the good `gnumeric.tcz` and any missing dependencies into `source/tcz-office/`, add them to the office list in the bake script, bake again, and check `md5sum` on the result.
 
 ## First start can sit on a blue screen
 
