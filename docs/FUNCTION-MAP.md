@@ -1,6 +1,6 @@
 # MiniOS function map
 
-Written: 2026-09-22. Live USB is Tiny Core 16.2, 32-bit. The call lists below were written for `MiniOS-TC-v0.2.155-play-close`. The image to flash now is in `sessions/CURRENT.md`. If this map and a live file disagree, the live file wins.
+Live USB is Tiny Core 16.2, 32-bit. Most call lists below were written for `MiniOS-TC-v0.2.155-play-close`, and the TikTok notes in section 17 were checked through v0.2.250. The image in this package is `MiniOS-TC-v0.2.260-bar`; see `README.md`. If this map and a live file disagree, the live file wins.
 
 This is the map of how the pieces call each other. Read it before changing a script. The safe edit is the one that stays on one app's files and one app's `/tmp` names.
 
@@ -11,26 +11,25 @@ The laptop is a Gateway MA3. Mobile AMD Sempron 3300+ at 2.0 GHz, one core, 32-b
 Do this before editing:
 
 1. Read this file from the start through the section for that app. The sections are boot, dock, `minios-run`, YouTube, the YouTube player, TikTok, close and Refresh RAM, `/tmp` names, bake, the file list, and "If you change this, also check that."
-2. Open the live file under `poc/tinycore/scripts/` and read the function you will change plus the functions that call it. Repo-root `scripts/` is the old antiX tree and is not on the USB.
+2. Open the live file under `source/scripts/` and read the function you will change plus the functions that call it.
 3. Stay on that app's files and that app's `/tmp` names. YouTube uses `minios-mp` and `minios-yt`. TikTok uses `minios-tt`. When you insert new code, the feature that already works must keep working. Add new variables and a new function, and copy the lines you need into that function. Leave the working function as it is. A media-type check can share one function when the YouTube lines stay the ones that already work and the TikTok lines are their own branch. Rewriting that shared function is what broke YouTube. A new function is finished only when the same edit starts it, calls it, and closes it: the process is waited on, and the flag, the pid, and the temporary file it owns are cleared. Do not leave the call or the cleanup for a later patch.
 4. Copying code is accepted until the end of the project. Security review and shortening come after the features work.
 5. Do not recompile `minios-player-bar` or `minios-tt-player-bar`. The USB runs the saved player binaries, not those source files.
 6. Name the new image id before baking. Do not overwrite an older `.img`.
-7. Read `sessions/SESSION-START.md` and run its triple check before the reply, and again before the bake. A requirement with no sentence in the reply, or no line in the diff, is not done.
+7. Before the bake, check each requirement against the diff. A requirement with no line in the diff is not done.
 
 ## 1. Which tree is the product
 
 | Tree | What it is | On the USB? |
 |---|---|---|
-| `poc/tinycore/scripts/` | The live MiniOS programs. Bakes copy these into `core.gz` under `/opt/minios/`. | Yes |
-| `poc/tinycore/fltube-src/` | YouTube search GUI. Compiled to `fltube` and installed as `/opt/minios/bin/fltube`. | Yes, as the binary |
-| `poc/tinycore/restore-106/minios-mplayer` | YouTube mplayer wrapper that is actually shipped. | Yes |
-| `poc/tinycore/scripts/minios-player-bar.cxx` | Source for the player. **Not the binary on the USB.** | No. The USB binary is the v0.2.106 ELF, MD5 `4f98713e`, with one same-length patch |
-| `poc/tinycore/scripts/minios-mplayer` | A later wrapper. **Do not ship it.** It writes `/tmp/minios-mp.reload` during a download and kills play | No |
-| `scripts/` at the repo root, `config/`, `desktop/` | Older antiX desktop. Not the Gateway image | No |
+| `source/scripts/` | The live MiniOS programs. Bakes copy these into `core.gz` under `/opt/minios/`. | Yes |
+| `source/fltube-src/` | YouTube search GUI. Compiled to `fltube` and installed as `/opt/minios/bin/fltube`. | Yes, as the binary |
+| `source/usb-binaries/minios-mplayer` (same file as `source/restore-106/minios-mplayer`) | YouTube mplayer wrapper that is actually shipped. | Yes |
+| `source/scripts/minios-player-bar.cxx` | Source for the player. **Not the binary on the USB.** | No. The USB binary is `source/usb-binaries/minios-player-bar`, the v0.2.106 ELF, MD5 `4f98713e`, with one same-length patch |
+| `source/scripts/minios-mplayer` | A later wrapper. **Do not ship it.** It writes `/tmp/minios-mp.reload` during a download and kills play | No |
 | `wbar.tcz` on the FAT partition | Tiny Core dock. `wbar_setup.sh` creates `xwbar.lst`. Not a file in this repo | Yes, inside the tcz |
 
-A change in `scripts/` at the repo root does not change the laptop. A change in `minios-player-bar.cxx` does not change the laptop until someone recompiles and replaces the ELF. Do not do that.
+A change in `minios-player-bar.cxx` does not change the laptop until someone recompiles and replaces the ELF. Do not do that.
 
 ## 2. Boot, in order
 
@@ -72,7 +71,7 @@ Tiny Core init
 | `append_icon` | Adds one dock row if that command is not already there |
 | `place_tiktok_beside_youtube` | Order is YouTube, TikTok, AI, Wi-Fi, Refresh RAM, Exit |
 
-Every dock command is `minios-run <name> -- <program>`. The desktop files in `poc/tinycore/scripts/*.desktop` are the same commands.
+Every dock command is `minios-run <name> -- <program>`. The desktop files in `source/scripts/*.desktop` are the same commands.
 
 | Icon | Command |
 |---|---|
@@ -210,7 +209,7 @@ The cxx in the repo has the same shape, so this is what the binary does. Editing
 - Attaches `/tmp/minios-ytplay.audio` and the caption file.
 - Writes `/tmp/minios-mp.done` after playback starts. The bar will not advance to the next clip without that file.
 
-Do not replace this wrapper with `poc/tinycore/scripts/minios-mplayer`.
+Do not replace this wrapper with `source/scripts/minios-mplayer`.
 
 ## 7. TikTok, click by click
 
@@ -365,7 +364,7 @@ AI:
 
 ## 11. Bake
 
-A new image is `poc/tinycore/build-bake-ap01-vN.sh`, run as root (`wsl -u root`). It copies the previous `.img`, unpacks `core.gz` with cpio as root, replaces only the files that change, packs with `find . | cpio -o -H newc | gzip -9`, stamps the wallpaper with `stamp-image-id.py`, and sets the volume with `set-img-volname.sh`.
+A new image is built by `bake/build-next-image.sh` (the record of the v0.2.260 bake is `bake/build-bake-ap01-v260.sh`), run as root (`wsl -u root`). It copies the previous `.img`, unpacks `core.gz` with cpio as root, replaces only the files that change, packs with `find . | cpio -o -H newc | gzip -9`, stamps the wallpaper with `stamp-image-id.py`, and sets the volume with `set-img-volname.sh`.
 
 Rules that have already broken a flash:
 
@@ -374,9 +373,9 @@ Rules that have already broken a flash:
 - Wallpaper caption is `MiniOS-TC-v0.2.N` only.
 - Do not replace `minios-player-bar` or `minios-mplayer` unless the task is an explicit restore of those two files as a pair.
 - `/dev/null` must still be in `core.gz`. No `/home/tc/.xsession`.
-- Copy the finished `.img` to `backup/` and `poc/tinycore/`. Never overwrite an older image.
+- The bake writes the finished `.img` to `out/` and refuses to overwrite the packaged image. Never overwrite an older image.
 
-## 12. Every file in poc/tinycore/scripts
+## 12. Every file in source/scripts
 
 Live programs (installed under `/opt/minios` by a bake):
 
@@ -453,7 +452,7 @@ Live programs (installed under `/opt/minios` by a bake):
 | `*.desktop` | Dock and menu command lines |
 | `firefox-user.js` `minios-view-image.xpi` | Nightly settings |
 
-Host-only (never copied as a running Gateway program): `fetch-*.sh`, `prepare-b43-firmware.sh`, `make-*-icon.py`, `compile` helpers live next to the bake scripts in `poc/tinycore/`.
+Host-only (never copied as a running Gateway program): `fetch-*.sh`, `prepare-b43-firmware.sh`, `make-*-icon.py`. The compile helpers are in `source/compile/` and the bake scripts are in `bake/`.
 
 ## 13. Before changing anything
 
@@ -463,8 +462,8 @@ Follow section 0 first. The laptop limits and the read-the-live-file steps are t
 2. If the file is `minios-player-bar.cxx` or `scripts/minios-mplayer`, stop. The USB does not run those files.
 3. If the change adds a `sudo` command, add that exact path to `minios-refresh-sudoers` or it will fail on the laptop.
 4. If the change deletes `/tmp/minios-py311`, unmount it first.
-5. New behavior needs a new image id. Do not overwrite `backup/MiniOS-TC-v0.2.*.img`.
-6. Flash target and the do-not-flash list are in `sessions/CURRENT.md` and `sessions/PROJECT-IDS.md`.
+5. New behavior needs a new image id. Do not overwrite an older image. The bake writes to `out/`.
+6. The image to flash is named in `README.md`.
 
 ## 14. What a close actually kills
 
@@ -502,7 +501,7 @@ Before reclaim, `minios-run` itself already does this:
 
 ## 15. YouTube player: source functions versus the binary
 
-`poc/tinycore/scripts/minios-player-bar.cxx` is the shape of the player. The USB binary is the v0.2.106 ELF, MD5 `4f98713e736ac7f892d7ceccb053606e`, with one same-length patch. Compiling this cxx and shipping it replaces that ELF. Do not.
+`source/scripts/minios-player-bar.cxx` is the shape of the player. The USB binary is the v0.2.106 ELF, MD5 `4f98713e736ac7f892d7ceccb053606e`, with one same-length patch. Compiling this cxx and shipping it replaces that ELF. Do not.
 
 The cxx `start_pl_item` (around line 1585) forks `minios-tiktok-play` when the URL contains `tiktok.com`, and otherwise forks `minios-shorts-play`. That TikTok fork is source drift. It is not a reason to recompile. TikTok play starts from `minios-tiktok.c` `play_item`, not from this file.
 
@@ -524,9 +523,9 @@ Source functions, grouped by what they touch:
 
 `minios-player-bar.c` is an older C player. It is not the USB binary.
 
-`poc/tinycore/scripts/minios-mplayer` is a later wrapper. It writes `/tmp/minios-mp.reload`. Do not ship it.
+`source/scripts/minios-mplayer` is a later wrapper. It writes `/tmp/minios-mp.reload`. Do not ship it.
 
-`poc/tinycore/restore-106/minios-mplayer` is the wrapper on the USB (MD5 `a2ecd453d68056ba8ed0b50cc1108082`):
+`source/restore-106/minios-mplayer` is the wrapper on the USB (MD5 `a2ecd453d68056ba8ed0b50cc1108082`):
 
 - `LOCALYT=1` when the argument matches `/tmp/minios-ytplay.`. That case does not write `/tmp/minios-mp.reload`.
 - A non-local YouTube URL does write reload (line 209). A search click must hand it a local file, not a watch URL.
@@ -572,7 +571,7 @@ Source functions, grouped by what they touch:
 
 ## 17. TikTok functions
 
-Checked 2026-10-14 against the live TikTok player bar, `minios-tiktok.c`, `minios-tiktok-search`, and `minios-tt-mplayer`. The call list below was written for v0.2.155. Where it disagrees with `poc/tinycore/scripts/`, the live file wins. v0.2.234 replaces the TikTok search window and the TikTok player bar. The search script and the TikTok mplayer script stay. v0.2.235 replaces the search window, the TikTok player bar, the search script, and the play script. The TikTok mplayer script stays. The first load line says Downloading media. The picture save says Optimizing video playback. Fit or High sits left of the seconds button. Fit still makes the 320-long-side mpeg4 picture. High keeps a larger H.264 file when that file can play, and that file does not go through tt_sync_file_ok. v0.2.235 could keep 24, and that longer fetch left too little time to check files. v0.2.236 replaces only the search script and keeps 16. v0.2.237 replaces only the TikTok player bar. v0.2.238 replaces the search script and the search window. v0.2.239 replaces only the search script. v0.2.240 replaces only the TikTok player bar. v0.2.241 replaces only the TikTok player bar. v0.2.242 replaces only the search script. v0.2.243 replaces only the search script. v0.2.244 replaces the search script, the search window, and the TikTok player bar. Go search with the same words continues links that were not shown. A different word clears that saved list. A failed last clip still offers More videos. v0.2.245 replaces the search script and the search window. The TikTok player bar stays. A first search with fewer than 8 videos checks one more page while time remains, at most twice. English drops a title that uses two common words from Spanish, French, German, or Portuguese. An empty continue says to press Go search! again. v0.2.246 replaces the search script and the search window. The TikTok player bar stays. More videos checks hits that were not shown, and a video already watched stays off that list. The same words continue even when the screen is empty. v0.2.247 adds MiniOS Streaming Player. Its window, play script, and /tmp names are its own. A word asks Radio Browser for plain MP3 or AAC stations. A pasted address plays that address. v0.2.248 also searches the Free-TV channel list. A picture channel plays the smallest size in that playlist. v0.2.249 keeps checking one more TikTok page while the chosen seconds remain, until 16 videos are ready. v0.2.250 skips a foreign title before the one-second check so the 30 second search can show more videos. The YouTube and TikTok player bars stay. The search reads lang= from the boot line. English is the start. A video whose words are in another writing system is not shown. Bing, DuckDuckGo, and Yahoo are asked in that language. More videos checks saved leftovers first. When those are gone, it reads one next page and then checks that page. Already shown clips stay off the list. The first search still stops near 8 raw links before the other sites. The playing title is drawn on the lower right of the control bar and shortened to fit. The top line stays MiniOS TikTok Player. After More videos, tt_show_stage maps the navy window again. While a video plays, that window stays behind the picture. tt_hold_list_quiet hides the stage once per list end. The first search keeps the pulled links that the clock did not check. More videos removes the ones already shown and checks the rest of that saved list before a new web search. More videos asks DuckDuckGo, Bing, and Yahoo before another Startpage page. The first search still stops at 8 raw rows before those sites. The window does not say the topic has no further videos. While the download bar is moving, the load window shows the download words. The sentence Could not load the video stays when the bar has stopped and the clip failed. Startpage gets at most one more page when fewer than 12 raw rows are in hand. DuckDuckGo, Bing, and Yahoo run only when fewer than 8 raw rows are in hand. The rest of the clock checks which files can play. While More videos is searching, status lines call tt_paint_load_line, and tt_paint_more_row does not repaint the whole window. While tt_end_hold is set, the player skips refresh_ui. Choosing a video calls `tt_hide_for_play`, which unmaps the MiniOS TikTok window and stops the 400ms wake. The player calls `tt_unmap_search` when that clip starts. Closing the player calls `tt_show_search_after_play`, which maps the same window. While More videos is on screen, `tt_end_hold` stops the player from raising its windows. `tt_paint_more_row` limits full redraws while new rows arrive. v0.2.233 added the list-end choice, and that choice stays. When the list ends, `tt_show_end_popup` offers More videos or New search. More videos writes `/tmp/minios-tt-ask` with `more` and `/tmp/minios-tt-watched.txt` for clips that started. New search writes `fresh`, closes the player, clears the search box, and focuses the MiniOS TikTok window. Loop one and loop all do not open that window. The ask file and its pid file are removed by the search window after it reads them, or by the player if the search window is not found. Pause saves the bar second and `tt_show_bar_time` puts that second back on every tick. Play counts forward from that second. A new picture clears the pause flag in `tt_begin_bar_clip`. The status line says Paused while the video is paused. The number between minus and plus is still sent once. `tt_hold_paused_bar`, `tt_apply_bar_clock`, `tt_pause_volume_and_bar`, and `tt_after_pause_toggle` remain and are not called. `tt_mark_load_start` still clears a load failure when the next download starts, and the words "Could not load the video." stay as they are. The live TikTok wrapper calls `tt_play_quiet_picture`. That uses `-demuxer lavf`, shows the saved picture at its real size, and does not draw the on-video volume or cache bar. It does not use `lowres`, `-correct-pts`, `-autosync`, framedrop, `-mc`, or `-speed`. `tt_play_sharp_picture` and `tt_play_picture_with_sound` remain and are not called. The picture reads `/tmp/minios-tt-mp.cmd`. `tt_sync_file_ok` accepts a file when the picture length matches the sound and the picture is no larger than YouTube's 426 by 240. `tt_make_sync_file` builds that file when the download is larger, and does not change the file's own timing. `tt_load_picture_libs` loads libavresample4, libavfilter4, SDL2, libv4l2, and libavdevice4 before that save, so the picture saver can start. The search window name stays MiniOS TikTok. The player bar draws the playlist title on a second line across the full width, under the CPU numbers. `minios-tt-now` is not started. Thumbnail files are named with the video id. `tt_make_clear_file` is the save that runs. It writes a 320-long-side mpeg4 picture, copies the sound, and keeps the file's own timing. `tt_make_sync_file` remains and is not called. A 720 by 1280 file does not pass, so it is not what plays. `tt_keep_open_file` moves the open file to `/tmp/minios-tt-open.mp4` before the download folder is removed, and the exit path removes that file after the picture player has been waited on. It runs `minios-tt-mplayer`. A later play takes the lock from the clip already running. Search reads a time limit from its second argument. `play_item` in `minios-tiktok.c` does not fork `minios-tiktok-play`. The player bar `start_pl_item` does. Search and a playlist row both reach that one script.
+Checked 2026-10-14 against the live TikTok player bar, `minios-tiktok.c`, `minios-tiktok-search`, and `minios-tt-mplayer`. The call list below was written for v0.2.155. Where it disagrees with `source/scripts/`, the live file wins. v0.2.234 replaces the TikTok search window and the TikTok player bar. The search script and the TikTok mplayer script stay. v0.2.235 replaces the search window, the TikTok player bar, the search script, and the play script. The TikTok mplayer script stays. The first load line says Downloading media. The picture save says Optimizing video playback. Fit or High sits left of the seconds button. Fit still makes the 320-long-side mpeg4 picture. High keeps a larger H.264 file when that file can play, and that file does not go through tt_sync_file_ok. v0.2.235 could keep 24, and that longer fetch left too little time to check files. v0.2.236 replaces only the search script and keeps 16. v0.2.237 replaces only the TikTok player bar. v0.2.238 replaces the search script and the search window. v0.2.239 replaces only the search script. v0.2.240 replaces only the TikTok player bar. v0.2.241 replaces only the TikTok player bar. v0.2.242 replaces only the search script. v0.2.243 replaces only the search script. v0.2.244 replaces the search script, the search window, and the TikTok player bar. Go search with the same words continues links that were not shown. A different word clears that saved list. A failed last clip still offers More videos. v0.2.245 replaces the search script and the search window. The TikTok player bar stays. A first search with fewer than 8 videos checks one more page while time remains, at most twice. English drops a title that uses two common words from Spanish, French, German, or Portuguese. An empty continue says to press Go search! again. v0.2.246 replaces the search script and the search window. The TikTok player bar stays. More videos checks hits that were not shown, and a video already watched stays off that list. The same words continue even when the screen is empty. v0.2.247 adds MiniOS Streaming Player. Its window, play script, and /tmp names are its own. A word asks Radio Browser for plain MP3 or AAC stations. A pasted address plays that address. v0.2.248 also searches the Free-TV channel list. A picture channel plays the smallest size in that playlist. v0.2.249 keeps checking one more TikTok page while the chosen seconds remain, until 16 videos are ready. v0.2.250 skips a foreign title before the one-second check so the 30 second search can show more videos. The YouTube and TikTok player bars stay. The search reads lang= from the boot line. English is the start. A video whose words are in another writing system is not shown. Bing, DuckDuckGo, and Yahoo are asked in that language. More videos checks saved leftovers first. When those are gone, it reads one next page and then checks that page. Already shown clips stay off the list. The first search still stops near 8 raw links before the other sites. The playing title is drawn on the lower right of the control bar and shortened to fit. The top line stays MiniOS TikTok Player. After More videos, tt_show_stage maps the navy window again. While a video plays, that window stays behind the picture. tt_hold_list_quiet hides the stage once per list end. The first search keeps the pulled links that the clock did not check. More videos removes the ones already shown and checks the rest of that saved list before a new web search. More videos asks DuckDuckGo, Bing, and Yahoo before another Startpage page. The first search still stops at 8 raw rows before those sites. The window does not say the topic has no further videos. While the download bar is moving, the load window shows the download words. The sentence Could not load the video stays when the bar has stopped and the clip failed. Startpage gets at most one more page when fewer than 12 raw rows are in hand. DuckDuckGo, Bing, and Yahoo run only when fewer than 8 raw rows are in hand. The rest of the clock checks which files can play. While More videos is searching, status lines call tt_paint_load_line, and tt_paint_more_row does not repaint the whole window. While tt_end_hold is set, the player skips refresh_ui. Choosing a video calls `tt_hide_for_play`, which unmaps the MiniOS TikTok window and stops the 400ms wake. The player calls `tt_unmap_search` when that clip starts. Closing the player calls `tt_show_search_after_play`, which maps the same window. While More videos is on screen, `tt_end_hold` stops the player from raising its windows. `tt_paint_more_row` limits full redraws while new rows arrive. v0.2.233 added the list-end choice, and that choice stays. When the list ends, `tt_show_end_popup` offers More videos or New search. More videos writes `/tmp/minios-tt-ask` with `more` and `/tmp/minios-tt-watched.txt` for clips that started. New search writes `fresh`, closes the player, clears the search box, and focuses the MiniOS TikTok window. Loop one and loop all do not open that window. The ask file and its pid file are removed by the search window after it reads them, or by the player if the search window is not found. Pause saves the bar second and `tt_show_bar_time` puts that second back on every tick. Play counts forward from that second. A new picture clears the pause flag in `tt_begin_bar_clip`. The status line says Paused while the video is paused. The number between minus and plus is still sent once. `tt_hold_paused_bar`, `tt_apply_bar_clock`, `tt_pause_volume_and_bar`, and `tt_after_pause_toggle` remain and are not called. `tt_mark_load_start` still clears a load failure when the next download starts, and the words "Could not load the video." stay as they are. The live TikTok wrapper calls `tt_play_quiet_picture`. That uses `-demuxer lavf`, shows the saved picture at its real size, and does not draw the on-video volume or cache bar. It does not use `lowres`, `-correct-pts`, `-autosync`, framedrop, `-mc`, or `-speed`. `tt_play_sharp_picture` and `tt_play_picture_with_sound` remain and are not called. The picture reads `/tmp/minios-tt-mp.cmd`. `tt_sync_file_ok` accepts a file when the picture length matches the sound and the picture is no larger than YouTube's 426 by 240. `tt_make_sync_file` builds that file when the download is larger, and does not change the file's own timing. `tt_load_picture_libs` loads libavresample4, libavfilter4, SDL2, libv4l2, and libavdevice4 before that save, so the picture saver can start. The search window name stays MiniOS TikTok. The player bar draws the playlist title on a second line across the full width, under the CPU numbers. `minios-tt-now` is not started. Thumbnail files are named with the video id. `tt_make_clear_file` is the save that runs. It writes a 320-long-side mpeg4 picture, copies the sound, and keeps the file's own timing. `tt_make_sync_file` remains and is not called. A 720 by 1280 file does not pass, so it is not what plays. `tt_keep_open_file` moves the open file to `/tmp/minios-tt-open.mp4` before the download folder is removed, and the exit path removes that file after the picture player has been waited on. It runs `minios-tt-mplayer`. A later play takes the lock from the clip already running. Search reads a time limit from its second argument. `play_item` in `minios-tiktok.c` does not fork `minios-tiktok-play`. The player bar `start_pl_item` does. Search and a playlist row both reach that one script.
 
 `minios-tiktok.c` (the window on the USB is the compiled `minios-tiktok`. v0.2.233 replaces this window, the TikTok player bar, and the search script. The TikTok mplayer script stays. The YouTube player bar is not replaced. `tt_take_end_ask` runs after each X event. `tt_run_more_search` sets `MINIOS_TT_WATCHED` and calls `do_search`. `tt_begin_fresh_search` clears the box. `tt_focus_query` focuses the window only after it is viewable.):
 
@@ -672,21 +671,16 @@ These are the functions actually defined. A script missing from this list is str
 | `bootsync.sh` / `bootlocal.sh` | `minios-swap-early` stays before X. No `exec flwm` written to `~/.xsession`. No tce boot word |
 | `wbar_setup.sh` inside `wbar.tcz` | `chown`/`chmod` of `xwbar.lst` stay silenced. The file lives on FAT |
 
-## 22. The rest of the repository is not the Gateway USB
+## 22. What is not in this package
 
-Changing these does not change the laptop until someone bakes them into `core.gz` or the FAT partition.
+The development tree this map was written in held more than this package does. These parts were left out on purpose, and none of them is the Gateway USB:
 
-| Tree | What it is |
-|---|---|
-| `scripts/`, `config/`, `desktop/` | antiX 0.1 desktop (IceWM, Midori, `minios-install.sh`). `README.md` still describes that product. The Gateway does not boot it |
-| `docs/` | antiX design notes plus `TINYCORE-MINIOS-DELTA.md`. Not runtime |
-| `branding/` | Shared art. The USB wallpaper stamp uses `poc/tinycore` branding and `stamp-image-id.py` |
-| `poc/tinycore/build-bake-ap01-vN.sh` | One bake script per image. Use the newest as the pattern. Do not re-run an old one. v149's script used a custom cpio rewriter |
-| `poc/tinycore/compile-*.sh` | Host compilers. `compile-player-bar.sh` must not replace the YouTube ELF. `compile-tiktok.sh` builds `minios-tiktok`. `compile-fltube-i686.sh` needs the flags in section 18 |
-| `backup/*.img` and `poc/tinycore/*.img` | Flash images. Never overwrite. Fallback is `backup/MiniOS-TC-v0.2.148-loop-off.img` |
-| `versions/` | Old snapshots and notes |
-| `starlight-main/`, `Starlight-MiniOS/`, `test/` | Separate LAN project (`docs/STARLIGHT-MINIOS-LAN.md`). Not in `core.gz` |
-| `artifacts/`, `iso/`, `vendor/` | Unpacked trees and the antiX ISO. Not the live edit surface |
-| `sessions/gateway-v02*-logs/` | Logs copied off the laptop after a test. Read them before guessing why play failed |
+- The old antiX 0.1 desktop (`scripts/`, `config/`, `desktop/`, IceWM, Midori, `minios-install.sh`).
+- Older stick images and the `backup/` folder of images.
+- Unpacked trees and ISOs (`artifacts/`, `iso/`, `vendor/`) and old snapshots (`versions/`).
+- A separate LAN project (`starlight-main/`, `Starlight-MiniOS/`, `test/`).
+- Logs copied off the laptop after each test (`sessions/`).
 
-Host-only files inside `poc/tinycore/scripts` (never a Gateway program): `fetch-*.sh`, `prepare-b43-firmware.sh`, `make-*-icon.py`, `stamp-image-id.py`, `set-img-volname.sh`, `patch-player-loop.py`, `minios-baseline-check`, `minios-ap06-check`, `minios-check-autostart`. `LICENSE-YOUTUBE.txt` and `minios-view-image/` (a Nightly extension) ride along with Firefox settings. `minios-xsession-stock` must not be installed into `core.gz`.
+What is here: `bake/build-next-image.sh` builds the next image and `bake/build-bake-ap01-v260.sh` records how v0.2.260 was made. Do not re-run an old bake script. v0.2.149's script used a custom cpio rewriter. `source/compile/compile-*.sh` are host compilers. `compile-player-bar.sh` must not replace the YouTube ELF. `compile-tiktok.sh` builds `minios-tiktok`. `compile-fltube-i686.sh` needs the flags in section 18.
+
+Host-only files inside `source/scripts` (never a Gateway program): `fetch-*.sh`, `prepare-b43-firmware.sh`, `make-*-icon.py`, `stamp-image-id.py`, `set-img-volname.sh`, `patch-player-loop.py`, `minios-baseline-check`, `minios-ap06-check`, `minios-check-autostart`. `LICENSE-YOUTUBE.txt` and `minios-view-image/` (a Nightly extension) ride along with Firefox settings. `minios-xsession-stock` must not be installed into `core.gz`.
