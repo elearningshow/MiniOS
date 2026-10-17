@@ -49,7 +49,7 @@ A row of buttons runs along the bottom.
 | --- | --- |
 | YouTube | Search YouTube and play a result. |
 | TikTok | Search TikTok and play a result. |
-| Streaming | Search free radio and picture stations. |
+| Streaming | Search free radio and TV stations. |
 | Nightly | Web browser. JavaScript starts off. Click here on a heavy page to turn it on. |
 | Text Browser | A text-only browser. |
 | Media Player | Play a local video or music file. |
