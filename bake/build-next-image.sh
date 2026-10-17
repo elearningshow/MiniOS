@@ -9,7 +9,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PROJ="$ROOT"
 POC="$ROOT/source"
-SCRIPTS="$ROOT/source/scripts"
+export SCRIPTS="$ROOT/source/scripts"
 SRC="$ROOT/MiniOS-TC-v0.2.260-bar.img"
 VER=v0.2.261-edit
 IMG_NAME=MiniOS-TC-v0.2.261-edit.img
@@ -219,7 +219,7 @@ if grep -q 'minios-tiktok-play' "$SCRIPTS/minios-tt-guard.c"; then echo "FAIL gu
 [[ "$(md5sum "$SCRIPTS/minios-tt-guard" | awk '{print $1}')" == "$GUARD_MD5" ]]
 python3 - <<'PY'
 from pathlib import Path
-rec = Path("/mnt/f/AI/xAI-projects/MiniOS/poc/tinycore/scripts/minios-reclaim").read_text()
+rec = Path(__import__("os").environ["SCRIPTS"], "minios-reclaim").read_text()
 part = rec.split("Search-GUI close", 1)[1]
 part = part.split("youtube|fltube|minios-youtube)", 1)[1].split("tiktok|minios-tiktok)", 1)
 yt, rest = part[0], part[1]
@@ -228,7 +228,7 @@ if "reset_zram 12" not in yt:
     raise SystemExit("FAIL youtube zram branch changed")
 if "reset_zram" in tt or "drop_caches" in tt:
     raise SystemExit("FAIL tiktok reclaim still resets zram")
-rel = Path("/mnt/f/AI/xAI-projects/MiniOS/poc/tinycore/scripts/minios-tt-release").read_text()
+rel = Path(__import__("os").environ["SCRIPTS"], "minios-tt-release").read_text()
 if "drop_caches" in rel or "minios-appkit" in rel:
     raise SystemExit("FAIL release drops caches or unloads the kit")
 if "tt-release leave python and caches" not in rel:
@@ -310,7 +310,7 @@ grep -a -q 'player-v241 title' "$SCRIPTS/minios-tt-player-bar"
 grep -a -q 'player-v244 last' "$SCRIPTS/minios-tt-player-bar"
 python3 - <<'PY'
 from pathlib import Path
-t = Path("/mnt/f/AI/xAI-projects/MiniOS/poc/tinycore/scripts/minios-tiktok-search").read_text(encoding="utf-8", errors="replace")
+t = Path(__import__("os").environ["SCRIPTS"], "minios-tiktok-search").read_text(encoding="utf-8", errors="replace")
 start = t.find("search_fast_show() {")
 body = t[start:t.find("\n}\n", start)]
 for bad in ("tt_keep_asking", "tt_fill_startpage", "tt_resolve_shorts", "tt_fill_unseen"):
