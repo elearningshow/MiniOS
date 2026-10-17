@@ -103,7 +103,8 @@ YouTube and TikTok do not share a player, a downloader, or temporary-file names.
 | `bake/build-bake-ap01-v260.sh` | Record of the bake that made this image. Its paths point at the development machine. Do not run it from this folder. |
 | `bake/build-next-image.sh` | Builds the next image from this folder. |
 | `docs/WHAT-MINIOS-CHANGED.md` | What MiniOS added to Tiny Core 16.2. |
-| `docs/FUNCTION-MAP.md` | How the programs call each other. Some call lists are older than this image. The file in `source/scripts/` wins. |
+| `docs/FUNCTION-MAP.md` | How the programs call each other. Written for an older image, with older paths: see `docs/PATH-MAP.md`. The file in `source/scripts/` wins. |
+| `docs/PATH-MAP.md` | Maps the old paths in FUNCTION-MAP.md to this package. |
 | `docs/FILES.md` | Points to this table. Run `git ls-files` for the full list. |
 | `docs/RULES.md` | Rules for a change that still runs on the Gateway. |
 | `out/` | Empty until a next bake. The new image is written here. |
