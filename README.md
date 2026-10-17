@@ -1,5 +1,7 @@
 # MiniOS
 
+![MiniOS desktop](source/wallpaper/mini-os-bg.jpg)
+
 This folder is the MiniOS package. Uploading this folder, or forking only this folder, is enough to write the USB stick and to change the project. The rest of a development tree is not required.
 
 MiniOS is a live USB system for an old 32-bit PC. It starts from the stick and does not install onto the internal hard drive. The system it was built for is a Gateway MA3: one 32-bit core, about 441 MB of working memory, a 512 MB swap file, and no hardware video decoder. A change that needs a second core, 64-bit code, a hardware decoder, or a large copy in memory will not run on that machine.
