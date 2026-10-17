@@ -77,7 +77,7 @@ A row of buttons runs along the bottom. The picture behind them is 1792 by 1008 
 | Games | A small menu. `1` is GTK Tetris, `2` is LBreakout2. The first use downloads about 2.6 MB. |
 | AI | A chat window. It needs the network. |
 | Document | AbiWord. It loads when the button is clicked. It is not loaded at boot. |
-| Spreadsheet | Gnumeric. It loads when the button is clicked. It is not loaded at boot. |
+| Spreadsheet | Gnumeric. It loads when the button is clicked. It is not loaded at boot. Known issue: it can fail to open, see `docs/KNOWN-ISSUES.md`. |
 | Wifi | Connects to a wireless network. The Gateway uses a Broadcom 4318 and the b43 driver. |
 | Refresh RAM | Frees memory after a heavy program. |
 | Exit | Leaves MiniOS. |
@@ -134,7 +134,7 @@ The next image caption is MiniOS-TC-v0.2.261. The volume name is MINIOS-2261. To
 
 Several player files are locked to a checksum inside the bake script. If you change one of those files, the bake stops until the matching checksum in `bake/build-next-image.sh` is updated in the same edit. The locks exist so a dock change cannot quietly replace the YouTube or TikTok player. The dock script, the bar starter, the boot scripts, and the Streaming programs are the files a menu or Streaming change normally edits.
 
-MiniOS-TC-v0.2.260 has been booted and tested on the Gateway MA3, and everything worked. A test build, v0.2.261-edit, was baked from it and booted. On that build the Spreadsheet button fails, so it is not the image to flash. See `docs/KNOWN-ISSUES.md`.
+MiniOS-TC-v0.2.260 has been booted and tested on the Gateway MA3. The desktop and most programs work, but the Spreadsheet button can fail to open. The same problem is on the v0.2.261-edit test build. See `docs/KNOWN-ISSUES.md` for a reinstall fix.
 
 ## How the stick is built
 

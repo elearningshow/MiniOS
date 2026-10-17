@@ -2,7 +2,7 @@
 
 ## Spreadsheet (Gnumeric) may not open
 
-On the v0.2.261-edit build, the Spreadsheet window can close right after it opens. Document and the other buttons work.
+On v0.2.260 (the packaged image) and on the v0.2.261-edit build, the Spreadsheet window can close right after it opens. Document and the other buttons work. Because both images show it, the bake script is not the cause.
 
 **Recommended fix: reinstall Gnumeric.** This needs the network and has not been confirmed to work on every stick.
 
@@ -23,7 +23,7 @@ df -h $T
 gnumeric
 ```
 
-Check `df -h` first: the stick's boot partition is nearly full. Keep a v0.2.260 stick as a fallback.
+Check `df -h` first: the stick's boot partition is nearly full.
 
 ## First start can sit on a blue screen
 
