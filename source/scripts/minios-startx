@@ -1,0 +1,27 @@
+#!/bin/sh
+# minios-startx-wrap
+# Live replacement for Xlibs startx. Patch .xsession, then run the stock script.
+# Stock startx does: exec $HOME/.xsession
+# A missing or non-executable .xsession prints: No such file or directory
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+STOCK=/opt/minios/startx.stock
+
+if [ ! -s "$HOME/.xsession" ]; then
+  if [ -s /etc/skel/.xsession ]; then
+    cp -f /etc/skel/.xsession "$HOME/.xsession"
+  elif [ -x /usr/local/bin/xsetup.sh ]; then
+    /usr/local/bin/xsetup.sh
+  fi
+fi
+if [ -x /opt/minios/minios-xvesa-nozap ]; then
+  /opt/minios/minios-xvesa-nozap
+fi
+if [ -f "$HOME/.xsession" ]; then
+  chmod 0755 "$HOME/.xsession" 2>/dev/null || true
+fi
+
+if [ ! -x "$STOCK" ]; then
+  echo "minios-startx: stock startx missing" >&2
+  exit 1
+fi
+exec "$STOCK" "$@"

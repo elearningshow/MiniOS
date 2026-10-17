@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Text Browser
+Comment=SEARCH-INPUT-AP-01: links at DuckDuckGo Lite (no images, no JavaScript)
+Exec=minios-run minios-text-browser -- /usr/local/bin/minios-text-browser
+Icon=/usr/local/share/pixmaps/minios/0XXRf.png
+X-FullPathIcon=/usr/local/share/pixmaps/minios/0XXRf.png
+Terminal=false
+Categories=Network;WebBrowser;
+StartupNotify=false

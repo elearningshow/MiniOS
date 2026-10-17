@@ -1,0 +1,103 @@
+#!/bin/sh
+# MINIOS-GOAL-01: launch the USB-embedded Firefox ESR 140.
+# Does not use tce-load. Does not download. Does not run at boot.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+export HOME="${HOME:-/home/tc}"
+URL="${1:-https://html.duckduckgo.com/html/}"
+PROFILE="$HOME/.mozilla/firefox/minios.default"
+LOG=/tmp/minios-firefox.log
+
+find_root() {
+  if [ -x /opt/firefox/usr/local/lib/firefox/firefox ]; then
+    echo /opt/firefox
+    return 0
+  fi
+  if [ -x /minios-firefox/usr/local/lib/firefox/firefox ]; then
+    echo /minios-firefox
+    return 0
+  fi
+  for d in /mnt/*; do
+    [ -x "$d/minios-firefox/usr/local/lib/firefox/firefox" ] || continue
+    echo "$d/minios-firefox"
+    return 0
+  done
+  return 1
+}
+
+ROOT=$(find_root) || {
+  echo "MINIOS-GOAL-01: embedded Firefox not found on the USB."
+  echo "Expected: <usb>/minios-firefox/usr/local/lib/firefox/firefox"
+  echo -n "Press Enter... "
+  read _ || true
+  exit 1
+}
+
+FF="$ROOT/usr/local/lib/firefox/firefox"
+LIB="$ROOT/usr/local/lib"
+export LD_LIBRARY_PATH="$LIB/firefox:$LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export MOZILLA_FIVE_HOME="$ROOT/usr/local/lib/firefox"
+if [ -d "$ROOT/usr/local/etc/fonts" ]; then
+  export FONTCONFIG_PATH="${FONTCONFIG_PATH:-$ROOT/usr/local/etc/fonts}"
+fi
+if [ -d "$ROOT/usr/local/share" ]; then
+  export XDG_DATA_DIRS="$ROOT/usr/local/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+fi
+export MOZ_WEBRENDER=0
+export MOZ_ACCELERATED=0
+export MOZ_DISABLE_RDD_SANDBOX=1
+# Xvesa cannot draw Firefox's XInput2 pointer, so the cursor
+# vanishes inside the window and still shows everywhere else.
+export MOZ_USE_XINPUT2=0
+
+mkdir -p "$PROFILE" "$PROFILE/extensions"
+if [ -f /opt/minios/firefox-user.js ]; then
+  cp -f /opt/minios/firefox-user.js "$PROFILE/user.js"
+fi
+if [ -f /tmp/minios-js-on ]; then
+  sed -i 's/javascript.enabled", false/javascript.enabled", true/' "$PROFILE/user.js"
+fi
+# Sideload View Image every launch (live /home is RAM).
+XPI=""
+if [ -f /opt/minios/minios-view-image.xpi ]; then
+  XPI=/opt/minios/minios-view-image.xpi
+elif [ -f "$ROOT/usr/local/lib/firefox/distribution/extensions/minios-view-image@minios.xpi" ]; then
+  XPI="$ROOT/usr/local/lib/firefox/distribution/extensions/minios-view-image@minios.xpi"
+fi
+if [ -n "$XPI" ]; then
+  cp -f "$XPI" "$PROFILE/extensions/minios-view-image@minios.xpi"
+fi
+if [ -f /opt/minios/minios-page-guard.xpi ]; then
+  cp -f /opt/minios/minios-page-guard.xpi \
+    "$PROFILE/extensions/minios-page-guard@minios.xpi"
+fi
+mkdir -p "$HOME/.mozilla/firefox"
+if [ ! -f "$HOME/.mozilla/firefox/profiles.ini" ]; then
+  cat >"$HOME/.mozilla/firefox/profiles.ini" <<'EOF'
+[General]
+StartWithLastProfile=1
+
+[Profile0]
+Name=minios
+IsRelative=1
+Path=minios.default
+Default=1
+EOF
+fi
+
+if command -v dbus-launch >/dev/null 2>&1 && [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+  eval "$(dbus-launch --sh-syntax)" || true
+elif [ -x "$ROOT/usr/local/bin/dbus-launch" ] && [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+  eval "$("$ROOT/usr/local/bin/dbus-launch" --sh-syntax)" || true
+fi
+
+echo "Embedded Firefox: $FF" >>"$LOG"
+echo "URL: $URL" >>"$LOG"
+if [ -x /opt/minios/minios-js-on ] && ! pidof minios-js-on >/dev/null 2>&1; then
+  /opt/minios/minios-js-on >/tmp/minios-js-on.log 2>&1 &
+elif [ -x /usr/local/bin/minios-js-on ] && ! pidof minios-js-on >/dev/null 2>&1; then
+  /usr/local/bin/minios-js-on >/tmp/minios-js-on.log 2>&1 &
+fi
+# Leave the window at Firefox's own size. A full-screen window
+# makes the software painter hold a larger picture in RAM.
+exec "$FF" --no-remote --profile "$PROFILE" "$URL"

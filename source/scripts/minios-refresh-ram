@@ -1,0 +1,22 @@
+#!/bin/sh
+# Dock Refresh RAM: same action as Ctrl+Alt+Delete → Refresh desktop.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+export HOME="${HOME:-/home/tc}"
+if [ -z "${XAUTHORITY:-}" ] && [ -f /home/tc/.Xauthority ]; then
+  export XAUTHORITY=/home/tc/.Xauthority
+fi
+if [ -x /opt/minios/minios-loading ]; then
+  /opt/minios/minios-loading stop >/dev/null 2>&1 || true
+fi
+rmdir /tmp/minios-cad.lock 2>/dev/null || true
+# Same popup as Ctrl+Alt+Delete: Refresh desktop / Cancel.
+if [ -x /opt/minios/minios-cad ]; then
+  exec /opt/minios/minios-cad
+fi
+if [ -x /usr/local/bin/minios-cad ]; then
+  exec /usr/local/bin/minios-cad
+fi
+echo "minios-cad missing" >>/tmp/minios-refresh-ram.log
+exit 1
+

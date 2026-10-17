@@ -1,0 +1,428 @@
+#!/bin/sh
+# BAKE-AP-01 Gate D — only reclaim implementation. Run as root.
+# Modes: auto | full | selftest
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-reclaim.log
+MODE="${1:-auto}"
+SCOPE="${2:-}"
+
+if [ "$(id -u)" -ne 0 ]; then
+  if command -v sudo >/dev/null 2>&1; then
+    exec sudo -n "$0" "$@"
+  fi
+  echo "minios-reclaim: need root" >>"$LOG"
+  exit 1
+fi
+
+user_app_running() {
+  pgrep -x firefox >/dev/null 2>&1 && return 0
+  pgrep -f 'firefox-bin' >/dev/null 2>&1 && return 0
+  pgrep -x fltube >/dev/null 2>&1 && return 0
+  pgrep -x mplayer >/dev/null 2>&1 && return 0
+  pgrep -f '/tmp/tcloop/mplayer-cli/usr/local/bin/mplayer' >/dev/null 2>&1 && return 0
+  pgrep -f '/opt/minios/minios-player-bar' >/dev/null 2>&1 && return 0
+  pgrep -x minios-tiktok >/dev/null 2>&1 && return 0
+  pgrep -f '/opt/minios/minios-tt-player-bar' >/dev/null 2>&1 && return 0
+  pgrep -f '/opt/minios/minios-tt-mplayer' >/dev/null 2>&1 && return 0
+  pgrep -x minios-streaming >/dev/null 2>&1 && return 0
+  return 1
+}
+
+kill_by_comm() {
+  sig="${1:-TERM}"
+  for c in /proc/[0-9]*/comm; do
+    [ -r "$c" ] || continue
+    n=$(tr -d '\n' < "$c" 2>/dev/null)
+    case "$n" in
+      mplayer|mplayer.bin)
+        pid=${c#/proc/}
+        pid=${pid%/comm}
+        kill "-$sig" "$pid" 2>/dev/null || true
+        ;;
+    esac
+  done
+}
+
+kill_user_apps() {
+  echo 1 >/tmp/minios-mp.quit
+  echo 1 >/tmp/minios-tt-mp.quit
+  if [ -p /tmp/minios-mp.cmd ]; then
+    ( printf 'quit\n' > /tmp/minios-mp.cmd ) &
+    qpid=$!
+    sleep 0.3
+    kill "$qpid" 2>/dev/null || true
+  fi
+  pkill -f '/usr/local/lib/firefox/firefox' 2>/dev/null || true
+  pkill -f '/minios-firefox/' 2>/dev/null || true
+  pkill -f 'firefox-bin' 2>/dev/null || true
+  pkill -x firefox 2>/dev/null || true
+  pkill -f 'Isolated Web Co' 2>/dev/null || true
+  pkill -f 'Privileged Cont' 2>/dev/null || true
+  pkill -f 'Socket Process' 2>/dev/null || true
+  pkill -f 'Web Content' 2>/dev/null || true
+  pkill -f 'WebExtensions' 2>/dev/null || true
+  pkill -f plugin-container 2>/dev/null || true
+  pkill -f 'RDD Process' 2>/dev/null || true
+  pkill -x fltube 2>/dev/null || true
+  pkill -x mplayer 2>/dev/null || true
+  pkill -f '/tmp/tcloop/mplayer-cli/usr/local/bin/mplayer' 2>/dev/null || true
+  pkill -f '/opt/minios/minios-player-bar' 2>/dev/null || true
+  pkill -f '/usr/local/bin/minios-player-bar' 2>/dev/null || true
+  pkill -f '/opt/minios/minios-mplayer' 2>/dev/null || true
+  pkill -f minios-youtube 2>/dev/null || true
+  pkill -f minios-tiktok-search 2>/dev/null || true
+  pkill -f minios-tiktok-play 2>/dev/null || true
+  pkill -f minios-tiktok-thumbs 2>/dev/null || true
+  pkill -x minios-tiktok 2>/dev/null || true
+  pkill -f '/opt/minios/minios-tiktok' 2>/dev/null || true
+  pkill -f '/opt/minios/minios-tt-player-bar' 2>/dev/null || true
+  pkill -f '/usr/local/bin/minios-tt-player-bar' 2>/dev/null || true
+  pkill -f '/opt/minios/minios-tt-mplayer' 2>/dev/null || true
+  pkill -x minios-streaming 2>/dev/null || true
+  pkill -f minios-streaming-play 2>/dev/null || true
+  pkill -f minios-streaming-search 2>/dev/null || true
+  rm -rf /tmp/minios-tt-dl /tmp/minios-tt-thumbs /tmp/minios-tt-search.html \
+         /tmp/minios-tt-raw.txt /tmp/minios-tt-last.txt /tmp/minios-tt-rows.txt \
+         /tmp/minios-tt-cookies /tmp/minios-tt-reason.txt /tmp/minios-tt-chunk.html \
+         /tmp/minios-tt-oe.json /tmp/minios-tt-thumbs.pid
+  pkill -f minios-shorts-play 2>/dev/null || true
+  pkill -f minios-yt-resolve 2>/dev/null || true
+  pkill -f yt-dlp 2>/dev/null || true
+  kill_by_comm TERM
+  sleep 1
+  pkill -9 -f '/minios-firefox/' 2>/dev/null || true
+  pkill -9 -x firefox 2>/dev/null || true
+  pkill -9 -x fltube 2>/dev/null || true
+  pkill -9 -x mplayer 2>/dev/null || true
+  pkill -9 -f '/tmp/tcloop/mplayer-cli/usr/local/bin/mplayer' 2>/dev/null || true
+  pkill -9 -f '/opt/minios/minios-player-bar' 2>/dev/null || true
+  pkill -9 -f '/usr/local/bin/minios-player-bar' 2>/dev/null || true
+  pkill -9 -f '/opt/minios/minios-mplayer' 2>/dev/null || true
+  pkill -9 -f '/opt/minios/minios-tt-player-bar' 2>/dev/null || true
+  pkill -9 -f '/usr/local/bin/minios-tt-player-bar' 2>/dev/null || true
+  pkill -9 -f '/opt/minios/minios-tt-mplayer' 2>/dev/null || true
+  kill_by_comm KILL
+}
+
+wipe_tmpfs_caches() {
+  # /home/tc is RAM on live USB. Nightly cache stays in RSS until removed.
+  # Downloaded clips live in /tmp (tmpfs) and keep the RAM meter high.
+  rm -rf /home/tc/.cache/mozilla \
+         /home/tc/.cache/thumbnails \
+         /tmp/mozilla* /tmp/Temp-* \
+         /tmp/fltube-cache /tmp/minios-one-image \
+         /tmp/minios-ytplay* /tmp/minios-ytplay.lock \
+         /tmp/minios-run-*.lock 2>/dev/null || true
+  rm -rf /home/tc/.mozilla/firefox/*/cache2 \
+         /home/tc/.mozilla/firefox/*/startupCache \
+         /home/tc/.mozilla/firefox/*/thumbnails \
+         /home/tc/.mozilla/firefox/*/shader-cache 2>/dev/null || true
+  rm -f /tmp/minios-mp.cmd /tmp/minios-mp.pid /tmp/minios-mp.out \
+        /tmp/minios-mp.done /tmp/minios-mp.fail /tmp/minios-mp.geom \
+        /tmp/minios-dl.progress /tmp/minios-player-bar.pid \
+        /tmp/minios-tt-mp.cmd /tmp/minios-tt-mp.pid /tmp/minios-tt-mp.out \
+        /tmp/minios-tt-mp.done /tmp/minios-tt-mp.fail /tmp/minios-tt-mp.geom \
+        /tmp/minios-tt-mp.quit /tmp/minios-tt-player-bar.pid \
+        /tmp/minios-tt-playlist /tmp/minios-ttplay.mp4 /tmp/minios-tt-dl.progress
+}
+
+is_keep_comm() {
+  case "$1" in
+    minios-rsmon|minios-resmon|minios-reclaim|minios-refresh-ram|minios-cad|minios-refresh-desktop) return 0 ;;
+    Xvesa|Xorg|X|Xvesa.bin|flwm|icewm|wbar|feh) return 0 ;;
+    wpa_supplicant|udhcpc|udhcpc6|earlyoom|udevd) return 0 ;;
+    aterm|xterm) return 0 ;;
+  esac
+  return 1
+}
+
+reap_leftovers() {
+  rm -f /tmp/minios-run-alert.lock \
+        /tmp/minios-run.lock \
+        /tmp/minios-browser-starting.lock
+  rm -rf /tmp/minios-run-*.lock
+  pkill -f 'Application is loading' 2>/dev/null || true
+  # Keep the Refresh RAM status window (minios-cad --notice) up.
+  if [ ! -f /tmp/minios-notice.pid ]; then
+    pkill -f 'Refresh RAM is loading' 2>/dev/null || true
+    pkill -x xmessage 2>/dev/null || true
+  fi
+}
+
+drop_caches_root() {
+  if [ "${1:-}" != fast ]; then
+    sync
+  fi
+  if [ ! -w /proc/sys/vm/drop_caches ]; then
+    echo "ERROR: cannot write /proc/sys/vm/drop_caches" >>"$LOG"
+    return 1
+  fi
+  echo 3 > /proc/sys/vm/drop_caches || {
+    echo "ERROR: drop_caches write failed" >>"$LOG"
+    return 1
+  }
+  echo "drop_caches=3 ok" >>"$LOG"
+  return 0
+}
+
+swapoff_wait() {
+  dev="$1"
+  secs="${2:-6}"
+  swapoff "$dev" &
+  spid=$!
+  i=0
+  while [ "$i" -lt $((secs * 10)) ] && kill -0 "$spid" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if kill -0 "$spid" 2>/dev/null; then
+    kill "$spid" 2>/dev/null || true
+    echo "swapoff $dev timed out after ${secs}s — leave swap" >>"$LOG"
+    return 1
+  fi
+  wait "$spid"
+}
+
+reset_zram() {
+  # Keep existing size. Do not grow. Do not remove. Never hang CAD on swapoff.
+  secs="${1:-2}"
+  awk 'NR>1 && $1 ~ /zram/ { print $1 }' /proc/swaps 2>/dev/null | while read -r dev; do
+    [ -n "$dev" ] || continue
+    echo "zram reset $dev" >>"$LOG"
+    if ! swapoff_wait "$dev" "$secs"; then
+      continue
+    fi
+    mkswap "$dev" >>"$LOG" 2>&1 || {
+      echo "ERROR: mkswap $dev" >>"$LOG"
+      continue
+    }
+    swapon -p 100 "$dev" >>"$LOG" 2>&1 || swapon "$dev" >>"$LOG" 2>&1 || {
+      echo "ERROR: swapon $dev" >>"$LOG"
+      continue
+    }
+  done
+  return 0
+}
+
+reset_disk_if_high() {
+  awk 'NR>1 && $1 !~ /zram/ { print $1, $3, $4 }' /proc/swaps 2>/dev/null | \
+  while read -r file size used; do
+    [ -n "$file" ] || continue
+    [ -f "$file" ] || continue
+    # high Used: more than 2 MB
+    if [ "${used:-0}" -gt 2048 ]; then
+      echo "disk swap reset $file used=${used}K (keep file)" >>"$LOG"
+      swapoff_wait "$file" 6 || { echo "ERROR: swapoff $file" >>"$LOG"; continue; }
+      swapon -p 1 "$file" || swapon "$file" || echo "ERROR: swapon $file" >>"$LOG"
+    else
+      echo "disk swap $file used=${used}K — leave" >>"$LOG"
+    fi
+  done
+}
+
+kill_tiktok_only() {
+  echo "scope tiktok — do not touch YouTube or MiniOS Media Player" >>"$LOG"
+  mp=$(cat /tmp/minios-tt-mp.pid 2>/dev/null || true)
+  case "$mp" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ "$(cat /proc/$mp/comm 2>/dev/null)" = mplayer ]; then
+        kill -9 "$mp" 2>/dev/null || true
+        echo "tiktok killed recorded mplayer $mp" >>"$LOG"
+      fi
+      ;;
+  esac
+  echo 1 >/tmp/minios-tt-mp.quit 2>/dev/null || true
+  pkill -f /opt/minios/minios-tiktok-search 2>/dev/null || true
+  pkill -f /usr/local/bin/minios-tiktok-search 2>/dev/null || true
+  pkill -f /opt/minios/minios-tiktok-thumbs 2>/dev/null || true
+  pkill -f /usr/local/bin/minios-tiktok-thumbs 2>/dev/null || true
+  pkill -f /opt/minios/minios-tiktok-play 2>/dev/null || true
+  pkill -x minios-tiktok 2>/dev/null || true
+  pkill -f '/opt/minios/minios-tiktok ' 2>/dev/null || true
+  pkill -f 'tiktoksearch' 2>/dev/null || true
+  pkill -f /opt/minios/minios-tt-player-bar 2>/dev/null || true
+  pkill -f /usr/local/bin/minios-tt-player-bar 2>/dev/null || true
+  pkill -f /opt/minios/minios-tt-mplayer 2>/dev/null || true
+  pkill -9 -f /opt/minios/minios-tt-player-bar 2>/dev/null || true
+  pkill -9 -f /opt/minios/minios-tt-mplayer 2>/dev/null || true
+  rm -rf /tmp/minios-tt-dl /tmp/minios-tt-thumbs
+  rm -f /tmp/minios-tt-search.html /tmp/minios-tt-raw.txt /tmp/minios-tt-last.txt \
+        /tmp/minios-tt-rows.txt /tmp/minios-tt-cookies /tmp/minios-tt-reason.txt \
+        /tmp/minios-tt-chunk.html /tmp/minios-tt-oe.json /tmp/minios-tt-thumbs.pid \
+        /tmp/minios-tiktok.ready /tmp/minios-tt-play.pid \
+        /tmp/minios-tt-mp.cmd /tmp/minios-tt-mp.pid /tmp/minios-tt-mp.out \
+        /tmp/minios-tt-mp.done /tmp/minios-tt-mp.fail /tmp/minios-tt-mp.geom \
+        /tmp/minios-tt-mp.quit /tmp/minios-tt-player-bar.pid \
+        /tmp/minios-tt-playlist /tmp/minios-ttplay.mp4 /tmp/minios-tt-dl.progress
+}
+
+kill_streaming_only() {
+  echo "scope streaming — do not touch YouTube or TikTok" >>"$LOG"
+  st=$(tr -dc '0-9' </tmp/minios-st-play.pid 2>/dev/null || true)
+  case "$st" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ "$(cat /proc/$st/comm 2>/dev/null)" = mplayer ]; then
+        kill "$st" 2>/dev/null || true
+        echo "streaming killed recorded mplayer $st" >>"$LOG"
+      fi
+      ;;
+  esac
+  pkill -f /opt/minios/minios-streaming-search 2>/dev/null || true
+  pkill -f /usr/local/bin/minios-streaming-search 2>/dev/null || true
+  pkill -f /opt/minios/minios-streaming-play 2>/dev/null || true
+  pkill -f /usr/local/bin/minios-streaming-play 2>/dev/null || true
+  pkill -x minios-streaming 2>/dev/null || true
+  rm -f /tmp/minios-streaming.ready /tmp/minios-st-play.pid /tmp/minios-st-raw.json \
+        /tmp/minios-st-rows.txt
+}
+
+kill_text_browser_only() {
+  echo "scope text-browser" >>"$LOG"
+  pkill -x links 2>/dev/null || true
+  pkill -f /opt/minios/minios-text-browser 2>/dev/null || true
+  pkill -f /usr/local/bin/minios-text-browser 2>/dev/null || true
+  pkill -f /opt/minios/minios-quick-search 2>/dev/null || true
+}
+
+{
+  echo "===== minios-reclaim $MODE scope=$SCOPE $(date) ====="
+  echo "----- before /proc/swaps -----"
+  cat /proc/swaps 2>/dev/null || true
+  awk '/MemTotal|MemAvailable|SwapTotal|SwapFree/' /proc/meminfo 2>/dev/null || true
+} >>"$LOG"
+
+if [ "$MODE" = selftest ]; then
+  {
+    echo "selftest: would drop_caches=3"
+    echo "selftest: would swapoff/mkswap/swapon -p 100 each zram"
+    echo "selftest: would reset disk file only if Used>2048K; never rm"
+    echo "----- after /proc/swaps (unchanged in selftest) -----"
+    cat /proc/swaps 2>/dev/null || true
+  } >>"$LOG"
+  exit 0
+fi
+
+if [ "$MODE" = auto ] && [ -f /tmp/minios-refreshing ]; then
+  echo "auto: CAD refresh in progress — skip" >>"$LOG"
+  exit 0
+fi
+
+# A named close always unloads that kit. Only skip when CAD is mid-refresh
+# or when auto was called with no scope and another app is still up.
+if [ "$MODE" = auto ] && [ -z "$SCOPE" ] && user_app_running; then
+  echo "auto: user app still running — reap only, no swapoff" >>"$LOG"
+  reap_leftovers
+  echo "----- after /proc/swaps -----" >>"$LOG"
+  cat /proc/swaps >>"$LOG" 2>/dev/null || true
+  exit 0
+fi
+
+# full, or auto with no user apps (idle path)
+# Order: reap → unmount Python → unload kit → zram → disk swap → drop_caches.
+# After a single dock app closes, only that app's processes are killed
+# so Text Browser / YouTube cannot be taken down mid-start.
+echo "idle/full reclaim scope=$SCOPE" >>"$LOG"
+reap_leftovers
+case "$SCOPE" in
+  youtube|fltube|minios-youtube)
+    pkill -f /opt/minios/minios-shorts-play 2>/dev/null || true
+    pkill -f /opt/minios/minios-yt-resolve 2>/dev/null || true
+    pkill -f /tmp/minios-py311/ 2>/dev/null || true
+    pkill -f yt-dlp 2>/dev/null || true
+    sleep 0.1
+    if [ -x /opt/minios/minios-py311-mount ]; then
+      /opt/minios/minios-py311-mount umount >>"$LOG" 2>&1 || true
+    fi
+    if mountpoint -q /tmp/minios-py311 2>/dev/null; then
+      umount /tmp/minios-py311 >>"$LOG" 2>&1 || \
+        umount -l /tmp/minios-py311 >>"$LOG" 2>&1 || true
+    fi
+    ;;
+esac
+if [ -x /opt/minios/minios-appkit ]; then
+  if [ "$MODE" = full ] || [ -z "$SCOPE" ]; then
+    /opt/minios/minios-appkit unload-all >>"$LOG" 2>&1 || true
+  else
+    /opt/minios/minios-appkit unload "$SCOPE" >>"$LOG" 2>&1 || true
+  fi
+fi
+case "$SCOPE" in
+  tiktok|minios-tiktok)
+    kill_tiktok_only
+    ;;
+  streaming|minios-streaming)
+    kill_streaming_only
+    ;;
+  text-browser|minios-text-browser|links|quick-search|minios-quick-search)
+    kill_text_browser_only
+    ;;
+  player|minios-player|minios-player-bar)
+    echo "scope player" >>"$LOG"
+    ;;
+  youtube|fltube|minios-youtube)
+    echo "scope youtube — do not kill TikTok" >>"$LOG"
+    pkill -f /opt/minios/minios-shorts-play 2>/dev/null || true
+    pkill -f /opt/minios/minios-yt-resolve 2>/dev/null || true
+    pkill -f /opt/minios/minios-player-bar 2>/dev/null || true
+    pkill -x mplayer 2>/dev/null || true
+    wipe_tmpfs_caches
+    if [ -x /opt/minios/minios-py311-mount ]; then
+      /opt/minios/minios-py311-mount umount >>"$LOG" 2>&1 || true
+    fi
+    if mountpoint -q /tmp/minios-py311 2>/dev/null; then
+      umount /tmp/minios-py311 >>"$LOG" 2>&1 || true
+    fi
+    if ! mountpoint -q /tmp/minios-py311 2>/dev/null; then
+      rm -rf /tmp/minios-py311
+    fi
+    rm -f /tmp/minios-ca-bundle.crt
+    echo "youtube wipe py311" >>"$LOG"
+    ;;
+  nightly|firefox|minios-firefox)
+    echo "scope nightly" >>"$LOG"
+    wipe_tmpfs_caches
+    ;;
+  "")
+    kill_user_apps
+    wipe_tmpfs_caches
+    ;;
+esac
+# Search-GUI close frees RAM without waiting on the disk swap file.
+# YouTube still pulls zram back. TikTok must not. That pull filled the
+# 441 MB and stopped AI Chat.
+case "$SCOPE" in
+  youtube|fltube|minios-youtube)
+    # Let swapoff finish. A 2 second kill left YouTube's zram allocated.
+    reset_zram 12 || true
+    reset_disk_if_high
+    drop_caches_root fast || true
+    ;;
+  tiktok|minios-tiktok)
+    echo "scope tiktok — leave zram and AI" >>"$LOG"
+    ;;
+  streaming|minios-streaming)
+    echo "scope streaming — leave zram" >>"$LOG"
+    ;;
+  *)
+    reset_zram 2 || true
+    reset_disk_if_high
+    drop_caches_root || true
+    ;;
+esac
+case "$SCOPE" in
+  youtube|fltube|minios-youtube|tiktok|minios-tiktok|streaming|minios-streaming) ;;
+  *)
+    if [ -w /proc/sys/vm/compact_memory ]; then
+      echo 1 > /proc/sys/vm/compact_memory 2>/dev/null || true
+      echo "compact_memory=1" >>"$LOG"
+    fi
+    ;;
+esac
+{
+  echo "----- after /proc/swaps -----"
+  cat /proc/swaps 2>/dev/null || true
+  awk '/MemTotal|MemAvailable|SwapTotal|SwapFree/' /proc/meminfo 2>/dev/null || true
+} >>"$LOG"
+exit 0

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=TikTok
+Comment=Search TikTok and play in the MiniOS TikTok Player
+Exec=/usr/local/bin/minios-run tiktok -- /usr/local/bin/minios-tiktok
+Icon=tiktok
+X-FullPathIcon=/opt/minios/tiktok.png
+Terminal=false
+Categories=AudioVideo;Network;
+StartupNotify=false

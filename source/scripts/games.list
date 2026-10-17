@@ -1,0 +1,12 @@
+# label	tcz	command	min_free_MB
+# TAB separated. A row that starts with # is skipped.
+# Active rows exist in the Tiny Core 16.x 32-bit repository.
+GTK Tetris	gtktetris.tcz	gtktetris	48
+LBreakout2	lbreakout2.tcz	lbreakout2	96
+# Frozen Bubble	frozen-bubble.tcz	frozen-bubble	96
+# Tux Typing	tuxtype.tcz	tuxtype	96
+# Typespeed	typespeed.tcz	aterm -e typespeed	48
+# SuperTux	supertux.tcz	supertux	160
+# Frozen Bubble, Tux Typing, and SuperTux are not in Tiny Core 7.x through 16.x 32-bit.
+# Typespeed exists only in Tiny Core 7.x and will not run on Tiny Core 16.
+# LBreakout2 links libSDL_mixer-1.2, which is already inside the on-boot SDL.tcz.

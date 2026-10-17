@@ -1,0 +1,82 @@
+#!/bin/sh
+# Make the Gateway internal IDE disk visible. NEVER format. NEVER install OS.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-internal.log
+
+{
+  echo "======== minios-internal $(date) ========"
+  echo "Policy: LIVE USB only — will not format or install to internal disk."
+  echo
+
+  echo "----- before: lsblk / partitions -----"
+  if command -v lsblk >/dev/null 2>&1; then
+    lsblk -o NAME,SIZE,MODEL,TRAN,LABEL,FSTYPE 2>/dev/null || lsblk
+  else
+    echo "(no lsblk)"
+    cat /proc/partitions
+  fi
+  echo
+
+  echo "----- load PATA/IDE modules (safe no-ops if absent) -----"
+  for m in ata_generic ata_piix pata_amd pata_atiixp pata_via pata_sis \
+           pata_jmicron pata_serverworks ahci libata sd_mod sr_mod; do
+    if modprobe "$m" 2>/dev/null; then
+      echo "loaded $m"
+    else
+      echo "skip $m"
+    fi
+  done
+  # Do not load deprecated ide-core unless libata failed
+  if ! grep -q ' sd[a-z]' /proc/partitions 2>/dev/null && ! ls /dev/sd[a-z] >/dev/null 2>&1; then
+    echo "trying legacy ide modules"
+    modprobe ide-core 2>/dev/null || true
+    modprobe ide-gd_mod 2>/dev/null || true
+  fi
+
+  echo "----- scsi host rescan -----"
+  for h in /sys/class/scsi_host/host*/scan; do
+    [ -w "$h" ] || continue
+    echo "- - -" >"$h" 2>/dev/null && echo "scanned $h" || true
+  done
+  sleep 2
+
+  echo "----- dmesg disk hints -----"
+  dmesg 2>/dev/null | grep -iE 'ata|ide|samsung|hm160|sda|sdb|PATA|ATA-' | tail -40 || true
+  echo
+
+  echo "----- after: devices -----"
+  cat /proc/partitions
+  echo
+  ls -l /dev/sd[a-z] /dev/hd[a-z] /dev/sd[a-z][0-9] /dev/hd[a-z][0-9] 2>/dev/null || true
+  echo
+
+  # Pick internal disk: largest non-USB disk if we can tell
+  INTERNAL=""
+  for d in /sys/block/sd* /sys/block/hd*; do
+    [ -d "$d" ] || continue
+    name=$(basename "$d")
+    # skip USB if removable=1 and size small-ish, but USB 32GB is also removable
+    rem=$(cat "$d/removable" 2>/dev/null || echo 1)
+    size=$(cat "$d/size" 2>/dev/null || echo 0)
+    # 160GB ≈ 312581808 sectors of 512
+    if [ "$size" -gt 200000000 ]; then
+      INTERNAL="/dev/$name"
+      echo "CANDIDATE large disk: $INTERNAL sectors=$size removable=$rem"
+    fi
+  done
+
+  if [ -n "$INTERNAL" ]; then
+    echo "INTERNAL_DISK=$INTERNAL"
+    echo "Do NOT format. Mount a partition read-write only if a filesystem already exists."
+    echo "Example: mkdir -p /mnt/internal && mount ${INTERNAL}1 /mnt/internal"
+  else
+    echo "INTERNAL_DISK=NOT_SEEN"
+    echo "If still missing: check BIOS that the 160GB drive is enabled; send dmesg from startup.log"
+  fi
+  echo "======== end minios-internal ========"
+} | tee "$LOG"
+
+echo
+echo "Log: $LOG"
+echo -n "Press Enter to close... "
+read _ans || true

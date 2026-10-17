@@ -1,0 +1,32 @@
+#!/bin/sh
+# Create or enable the 512 MB disk swap file BEFORE X starts.
+# Doing this after the desktop opened killed the dock (wbar) on low RAM.
+# Never format. Never wait for a key. Never start wbar.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-swap-early.log
+BIN=/opt/minios/minios-create-swap
+[ -x "$BIN" ] || BIN=/usr/local/bin/minios-create-swap
+
+{
+  echo "===== swap-early $(date) ====="
+  echo "before SwapTotal=$(awk '/^SwapTotal:/ { print $2 }' /proc/meminfo)"
+  if [ ! -x "$BIN" ]; then
+    echo "minios-create-swap missing"
+    exit 0
+  fi
+  # Already have a real disk file. Just make sure it is on.
+  disk=$(awk 'NR>1 && $1 !~ /zram/ { s+=$3 } END { printf "%d", s/1024 }' /proc/swaps 2>/dev/null)
+  [ -n "$disk" ] || disk=0
+  if [ "$disk" -ge 400 ]; then
+    echo "disk swap already ${disk}M — nothing to create"
+    if [ -x /opt/minios/minios-swap-tune ]; then
+      /opt/minios/minios-swap-tune || true
+    fi
+    exit 0
+  fi
+  echo "creating or enabling 512M disk swap before the desktop"
+  "$BIN" --yes --both --no-persist
+  echo "after SwapTotal=$(awk '/^SwapTotal:/ { print $2 }' /proc/meminfo)"
+  cat /proc/swaps 2>/dev/null || true
+} >>"$LOG" 2>&1
+exit 0

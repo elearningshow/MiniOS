@@ -1,0 +1,815 @@
+#!/usr/bin/env python3
+# Play only. Search stays on yt-dlp 2025.10.14 + python3.9.
+# Print ONE progressive HTTP URL (or a local file). SABR killed yt-dlp -g.
+# Prefer Piped / Invidious *proxy* URLs so the Gateway IP is not locked out.
+from __future__ import print_function
+
+import json
+import os
+import re
+import ssl
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+LOG = "/tmp/minios-yt-resolve.log"
+OUT = "/tmp/minios-ytplay.mp4"
+CACHE = "/tmp/minios-yt-resolve.cache"
+FAIL = "/tmp/minios-yt-resolve.fail"
+PROG = "/tmp/minios-dl.progress"
+UA = "Mozilla/5.0 (X11; Linux i686) AppleWebKit/537.36 MiniOS/0.2.32"
+CTX = ssl._create_unverified_context()
+
+# Known-good first. Short timeouts. Dead hosts fail fast.
+PIPED = (
+    "https://api.piped.private.coffee",
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.adminforge.de",
+    "https://pipedapi.leptons.xyz",
+    "https://pipedapi.ducks.party",
+)
+INVIDIOUS = (
+    "https://invidious.flokinet.to",
+    "https://inv.nadeko.net",
+    "https://yewtu.be",
+    "https://invidious.tiekoetter.com",
+    "https://yt.chocolatemoo53.com",
+    "https://invidious.f5.si",
+    "https://invidious.privacyredirect.com",
+    "https://invidious.nerdvpn.de",
+)
+
+
+def log(msg):
+    try:
+        with open(LOG, "a") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
+
+
+def write_progress(pct, label):
+    """One number, one label. The player chrome reads this file."""
+    try:
+        pct = int(pct)
+        if pct < 0:
+            pct = 0
+        if pct > 100:
+            pct = 100
+        tmp = PROG + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("%d\n%s\n" % (pct, label))
+        os.rename(tmp, PROG)
+    except Exception:
+        pass
+
+
+def video_id(text):
+    m = re.search(r"(?:v=|/shorts/|youtu\.be/|/embed/)([A-Za-z0-9_-]{11})", text)
+    if m:
+        return m.group(1)
+    m = re.search(r"\b([A-Za-z0-9_-]{11})\b", text)
+    return m.group(1) if m else None
+
+
+def is_tiktok(text):
+    t = (text or "").lower()
+    return "tiktok.com" in t or t.startswith("tiktoksearch")
+
+
+def tiktok_url(text):
+    m = re.search(r"https?://[^\s]*tiktok\.com/[^\s]+", text or "", re.I)
+    if m:
+        return m.group(0)
+    m = re.search(r"/video/(\d+)", text or "")
+    if m:
+        return "https://www.tiktok.com/@_/video/" + m.group(1)
+    return None
+
+
+def http_open(url, timeout=6, data=None, headers=None):
+    h = {"User-Agent": UA, "Accept": "*/*"}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, data=data, headers=h)
+    return urllib.request.urlopen(req, timeout=timeout, context=CTX)
+
+
+def fetch_json(url, timeout=6, data=None, headers=None):
+    with http_open(url, timeout=timeout, data=data, headers=headers) as r:
+        return json.load(r)
+
+
+def looks_like_mp4(url, timeout=6):
+    """Return the final URL if the first bytes are an MP4, else None."""
+    try:
+        with http_open(url, timeout=timeout, headers={"Range": "bytes=0-96"}) as r:
+            body = r.read(96)
+            ctype = (r.headers.get("Content-Type") or "").lower()
+            final = r.geturl()
+        if b"<html" in body[:80].lower() or b"{" == body[:1]:
+            log("not media %s" % url[:80])
+            return None
+        if b"ftyp" in body or "mp4" in ctype or "octet-stream" in ctype:
+            log("mp4 ok %s" % final[:120])
+            return final
+        log("not mp4 ctype=%s head=%r %s" % (ctype, body[:16], url[:80]))
+    except Exception as e:
+        log("probe fail %s %s" % (url[:80], e))
+    return None
+
+
+def pick_piped(data):
+    scored = []
+    for s in data.get("videoStreams") or []:
+        url = s.get("url") or ""
+        if not url or s.get("videoOnly"):
+            continue
+        mime = (s.get("mimeType") or "").lower()
+        fmt = (s.get("format") or "").lower()
+        q = str(s.get("quality") or "")
+        ql = q.lower()
+        if "mpegurl" in mime or "hls" in ql or "lbry" in ql:
+            continue
+        if "mp4" not in mime and "mpeg" not in fmt and "mp4" not in fmt:
+            continue
+        h = 9999
+        m = re.search(r"(\d+)", q)
+        if m:
+            h = int(m.group(1))
+        if h > 360:
+            continue
+        scored.append((0 if h <= 240 else 1, h, url))
+    scored.sort()
+    return scored[0][2] if scored else None
+
+
+def pick_invidious(streams):
+    scored = []
+    for s in streams or []:
+        url = s.get("url") or ""
+        if not url:
+            continue
+        q = str(s.get("qualityLabel") or s.get("quality") or "")
+        container = str(s.get("container") or s.get("type") or "")
+        h = 9999
+        m = re.search(r"(\d+)", q)
+        if m:
+            h = int(m.group(1))
+        if h > 360:
+            continue
+        scored.append((0 if h <= 240 else 1, h, 0 if "mp4" in container else 1, url, s.get("itag")))
+    scored.sort()
+    if not scored:
+        return None, None
+    return scored[0][3], scored[0][4]
+
+
+def hard_fail(err):
+    s = str(err)
+    for token in ("Error 500", "Error 502", "Error 503", "Error 403", "Error 401",
+                  "Error 400", "Error 526", "timed out", "timeout", "Forbidden"):
+        if token.lower() in s.lower():
+            return True
+    return False
+
+
+def try_piped(vid):
+    for inst in PIPED:
+        url = inst.rstrip("/") + "/streams/" + vid
+        log("piped " + url)
+        try:
+            data = fetch_json(url, timeout=4)
+            got = pick_piped(data)
+            if not got:
+                log("piped no progressive %s" % inst)
+                continue
+            final = looks_like_mp4(got, timeout=4)
+            if final:
+                log("piped hit " + inst)
+                return final
+        except Exception as e:
+            log("piped fail %s %s" % (inst, e))
+    return None
+
+
+def try_invidious(vid):
+    for inst in INVIDIOUS:
+        base = inst.rstrip("/")
+        # One itag per host. Four itags * 6s made FLTube sit on "currently played".
+        cand = "%s/latest_version?id=%s&itag=18&local=true" % (base, vid)
+        log("invidious local " + cand)
+        final = looks_like_mp4(cand, timeout=4)
+        if final:
+            log("invidious hit %s itag=18" % inst)
+            return final
+        api = base + "/api/v1/videos/" + vid + "?fields=formatStreams"
+        log("invidious api " + api)
+        try:
+            data = fetch_json(api, timeout=4)
+            got, itag = pick_invidious(data.get("formatStreams"))
+            if got:
+                if got.startswith("/"):
+                    got = base + got
+                if "googlevideo.com" in got:
+                    it = str(itag or "18")
+                    got = "%s/latest_version?id=%s&itag=%s&local=true" % (base, vid, it)
+                final = looks_like_mp4(got, timeout=4)
+                if final:
+                    log("invidious api hit " + inst)
+                    return final
+        except Exception as e:
+            log("invidious api fail %s %s" % (inst, e))
+            if hard_fail(e):
+                continue
+    return None
+
+
+def read_cache(vid):
+    try:
+        with open(CACHE) as f:
+            line = f.readline().strip()
+        parts = line.split(" ", 2)
+        # v0.2.40+: "id merge /tmp/minios-ytplay.mp4". Old two-field cache was video-only.
+        if len(parts) == 3 and parts[0] == vid and parts[1] == "merge" and parts[2]:
+            if is_av1(parts[2]):
+                log("cache av1 ignored " + vid)
+                return None
+            log("cache hit " + vid)
+            return parts[2]
+    except Exception:
+        pass
+    return None
+
+
+def write_cache(vid, url):
+    if url.startswith("/") and os.path.isfile(url):
+        try:
+            found = False
+            with open(url, "rb") as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    if b"mp4a" in chunk:
+                        found = True
+                        break
+            if not found:
+                log("cache skip no-aac " + url)
+                return
+        except Exception:
+            return
+    try:
+        with open(CACHE, "w") as f:
+            f.write(vid + " merge " + url + "\n")
+    except Exception:
+        pass
+
+
+def recent_fail(vid):
+    try:
+        with open(FAIL) as f:
+            line = f.readline().strip()
+        parts = line.split(" ", 2)
+        if len(parts) >= 2 and parts[0] == vid:
+            age = int(parts[1])
+            now = int(__import__("time").time())
+            if now - age < 90:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def write_fail(vid):
+    try:
+        with open(FAIL, "w") as f:
+            f.write("%s %s\n" % (vid, int(__import__("time").time())))
+    except Exception:
+        pass
+
+
+def is_av1(path):
+    """mplayer 1.4 on this image cannot decode AV1 (v0.2.40: format 0x31307661)."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096)
+        if b"av01" in head or b"av1C" in head or b"dav1" in head:
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def clear_play_files():
+    import glob
+    for p in glob.glob("/tmp/minios-ytplay*"):
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+        except Exception:
+            pass
+
+
+def mux_split_tracks(env=None):
+    """If yt-dlp left a video file and a .m4a, mux them. Do not play video-only."""
+    import glob
+    auds = []
+    vids = []
+    for p in glob.glob("/tmp/minios-ytplay*"):
+        if not os.path.isfile(p) or os.path.getsize(p) < 512:
+            continue
+        name = os.path.basename(p).lower()
+        if name.endswith((".m4a", ".aac")):
+            auds.append(p)
+            continue
+        if name.endswith((".webm", ".opus")):
+            continue
+        if is_av1(p):
+            continue
+        vids.append(p)
+    if not auds or not vids:
+        log("mux skip vids=%s auds=%s" % (len(vids), len(auds)))
+        return None
+    vids.sort(key=lambda p: (0 if ".f133." in p else 1, -os.path.getsize(p)))
+    auds.sort(key=lambda p: -os.path.getsize(p))
+    vid, aud = vids[0], auds[0]
+    ff = "/tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg"
+    if not os.path.isfile(ff):
+        ff = "ffmpeg"
+    tmp = "/tmp/minios-ytplay.mux.mp4"
+    cmd = [
+        ff, "-y", "-hide_banner", "-loglevel", "error",
+        "-i", vid, "-i", aud,
+        "-c", "copy", "-map", "0:v:0", "-map", "1:a:0",
+        "-shortest", tmp,
+    ]
+    log("ffmpeg mux " + " ".join(cmd))
+    try:
+        rc = subprocess.call(
+            cmd, stdout=open(LOG, "a"), stderr=subprocess.STDOUT,
+            env=env, timeout=20,
+        )
+    except subprocess.TimeoutExpired:
+        log("ffmpeg mux timeout")
+        return None
+    except Exception as e:
+        log("ffmpeg mux exc %s" % e)
+        return None
+    log("ffmpeg mux rc=%s" % rc)
+    if rc != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) < 1024:
+        return None
+    try:
+        if os.path.isfile(OUT):
+            os.remove(OUT)
+        os.rename(tmp, OUT)
+    except Exception as e:
+        log("ffmpeg mux rename %s" % e)
+        return None
+    log("mux wrote %s size=%s" % (OUT, os.path.getsize(OUT)))
+    return OUT
+
+
+def take_download():
+    import glob
+    files = []
+    for p in glob.glob("/tmp/minios-ytplay*"):
+        if not os.path.isfile(p) or os.path.getsize(p) < 1024:
+            continue
+        name = os.path.basename(p).lower()
+        if name.endswith((".m4a", ".aac", ".opus", ".webm")):
+            continue
+        if is_av1(p):
+            log("skip av1 %s" % p)
+            continue
+        exact = 0 if name == "minios-ytplay.mp4" else 1
+        files.append((exact, -os.path.getsize(p), p))
+    if not files:
+        return None
+    files.sort()
+    src = files[0][2]
+    if src != OUT:
+        try:
+            if os.path.isfile(OUT):
+                os.remove(OUT)
+        except Exception:
+            pass
+        os.rename(src, OUT)
+    if is_av1(OUT):
+        log("reject av1 merged %s" % OUT)
+        try:
+            os.remove(OUT)
+        except Exception:
+            pass
+        return None
+    log("take_download %s size=%s" % (OUT, os.path.getsize(OUT)))
+    return OUT
+
+
+def play_env():
+    env = os.environ.copy()
+    lib = "/tmp/minios-py311/python/lib"
+    if os.path.isdir(lib):
+        env["LD_LIBRARY_PATH"] = lib + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
+    bins = ["/tmp/tcloop/ffmpeg4/usr/local/bin"]
+    for d in os.listdir("/tmp/tcloop") if os.path.isdir("/tmp/tcloop") else []:
+        b = "/tmp/tcloop/%s/usr/local/bin" % d
+        if os.path.isdir(b):
+            bins.append(b)
+    env["PATH"] = ":".join(bins) + ":" + env.get("PATH", "/usr/bin")
+    # Standalone 3.11 has no issuer store (v0.2.35 CERTIFICATE_VERIFY_FAILED).
+    cert = None
+    for p in (
+        "/tmp/minios-ca-bundle.crt",
+        "/usr/local/etc/ssl/certs/ca-certificates.crt",
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/usr/local/share/ca-certificates/ca-certificates.crt",
+    ):
+        if os.path.isfile(p) and os.path.getsize(p) > 100:
+            cert = p
+            break
+    if cert:
+        env["SSL_CERT_FILE"] = cert
+        env["REQUESTS_CA_BUNDLE"] = cert
+        env["CURL_CA_BUNDLE"] = cert
+        env["SSL_CERT_DIR"] = os.path.dirname(cert)
+    env["PYTHONHTTPSVERIFY"] = "0"
+    return env
+
+
+def fetch_captions(vid):
+    """Download English auto-captions only. Does not touch the video file."""
+    import glob
+
+    setup = "/opt/minios/minios-py311-setup"
+    if not os.path.isfile(setup):
+        setup = "/usr/local/bin/minios-py311-setup"
+    if not os.path.isfile(setup):
+        log("cc no py311 setup")
+        return None
+    try:
+        py = subprocess.check_output([setup], stderr=open(LOG, "a")).decode().strip()
+    except Exception as e:
+        log("cc py311 setup fail %s" % e)
+        return None
+    ytd = "/opt/minios/bin/yt-dlp-2026.08.19"
+    if not py or not os.path.isfile(py) or not os.path.isfile(ytd):
+        log("cc missing yt-dlp 2026")
+        return None
+    url = "https://www.youtube.com/watch?v=" + vid
+    env = play_env()
+    cmd = [
+        py, ytd,
+        "--no-playlist", "--newline", "--no-check-certificates",
+        "--skip-download", "--write-auto-sub", "--sub-lang", "en.*",
+        "--convert-subs", "srt", "-o", "/tmp/minios-ytplay",
+        "--", url,
+    ]
+    log("cc ytdlp " + " ".join(cmd))
+    write_progress(0, "Getting captions")
+    try:
+        rc = subprocess.call(
+            cmd, stdout=open(LOG, "a"), stderr=subprocess.STDOUT,
+            env=env, timeout=20,
+        )
+    except Exception as e:
+        log("cc ytdlp exc %s" % e)
+        return None
+    log("cc ytdlp rc=%s" % rc)
+    subpath = None
+    for p in (
+        "/tmp/minios-ytplay.en.srt",
+        "/tmp/minios-ytplay.en-US.srt",
+        "/tmp/minios-ytplay.en-orig.srt",
+    ) + tuple(sorted(glob.glob("/tmp/minios-ytplay*.srt"))):
+        if os.path.isfile(p) and os.path.getsize(p) > 16:
+            subpath = p
+            break
+    if not subpath:
+        for p in sorted(glob.glob("/tmp/minios-ytplay*.vtt")):
+            if os.path.isfile(p) and os.path.getsize(p) > 16:
+                srt = "/tmp/minios-ytplay.en.srt"
+                try:
+                    raw = open(p, "r", encoding="utf-8", errors="replace").read()
+                    n = 0
+                    blocks = []
+                    cur = []
+                    for line in raw.replace("\r\n", "\n").split("\n"):
+                        if line.startswith("WEBVTT") or line.startswith("Kind:") or line.startswith("Language:"):
+                            continue
+                        if "-->" in line:
+                            line = re.sub(r"(\d\d:\d\d:\d\d)\.(\d+)", r"\1,\2", line)
+                            line = re.sub(r"(\d\d:\d\d)\.(\d+)", r"00:\1,\2", line)
+                            if cur:
+                                n += 1
+                                blocks.append(str(n) + "\n" + "\n".join(cur))
+                                cur = []
+                            parts = line.split("-->")
+                            if len(parts) >= 2:
+                                cur.append(parts[0].strip() + " --> " + parts[1].strip().split(" ")[0])
+                            continue
+                        if line.strip() == "":
+                            if cur:
+                                n += 1
+                                blocks.append(str(n) + "\n" + "\n".join(cur))
+                                cur = []
+                            continue
+                        cur.append(line)
+                    if cur:
+                        n += 1
+                        blocks.append(str(n) + "\n" + "\n".join(cur))
+                    open(srt, "w", encoding="utf-8").write("\n\n".join(blocks) + "\n")
+                    if os.path.getsize(srt) > 16:
+                        subpath = srt
+                        log("cc vtt to srt %s" % p)
+                except Exception as e:
+                    log("cc vtt convert %s" % e)
+                break
+    if subpath:
+        try:
+            with open("/tmp/minios-ytplay.sub", "w") as f:
+                f.write(subpath + "\n")
+        except Exception:
+            pass
+        write_progress(100, "Captions ready")
+        log("cc sidecar %s" % subpath)
+        return subpath
+    log("cc none")
+    return None
+
+
+def ytdlp_download_2026(vid):
+    # Do not extract CPython 3.11 onto tmpfs. That holds RAM/ZRAM after close.
+    py = "/tmp/minios-py311/python/bin/python3.11"
+    if not os.path.isfile(py):
+        log("skip yt-dlp 2026, py311 not already extracted")
+        return None
+    ytd = "/opt/minios/bin/yt-dlp-2026.08.19"
+    if not os.path.isfile(ytd):
+        log("no yt-dlp 2026.08.19")
+        return None
+    # ffmpeg CLI lives in ffmpeg4.tcz (needed to mux 240p+audio).
+    try:
+        subprocess.call(
+            ["/opt/minios/minios-sound-up", "libs-only"],
+            stdout=open(LOG, "a"), stderr=subprocess.STDOUT,
+        )
+    except Exception:
+        pass
+    dest_tmpl = "/tmp/minios-ytplay.%(ext)s"
+    url = "https://www.youtube.com/watch?v=" + vid
+    env = play_env()
+    ff = "/tmp/tcloop/ffmpeg4/usr/local/bin"
+    if os.path.isdir(ff):
+        env["PATH"] = ff + ":" + env.get("PATH", "")
+    log("play PATH=%s ffmpeg=%s" % (env.get("PATH", ""), os.path.isfile(ff + "/ffmpeg")))
+
+    def run_ytd(extra, timeout=180, label="Downloading"):
+        cmd = [
+            py, ytd,
+            "--no-playlist", "--newline",
+            "--no-check-certificates",
+        ] + extra + ["--", url]
+        log("ytdlp2026 " + " ".join(cmd))
+        write_progress(0, label)
+        try:
+            p = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                env=env, universal_newlines=True, bufsize=1,
+            )
+        except Exception as e:
+            log("ytdlp2026 exc %s" % e)
+            return 1
+        deadline = time.time() + timeout
+        last_pct = -1
+        while True:
+            if time.time() > deadline:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+                log("ytdlp2026 timeout %s" % timeout)
+                return 124
+            line = p.stdout.readline() if p.stdout else ""
+            if line:
+                m = re.search(r"\[download\]\s+([\d.]+)%", line)
+                if m:
+                    pct = int(float(m.group(1)))
+                    if pct != last_pct:
+                        write_progress(pct, label)
+                        last_pct = pct
+                        if pct % 10 == 0:
+                            log("progress %s %s%%" % (label, pct))
+                elif "ERROR" in line or "error" in line[:20]:
+                    log(line.rstrip()[:200])
+            elif p.poll() is not None:
+                break
+            else:
+                time.sleep(0.05)
+        rc = p.wait()
+        log("ytdlp2026 rc=%s" % rc)
+        if rc == 0:
+            write_progress(100, label)
+        return rc
+
+    # Picture first. Do not use 133+audio in one -f — that makes yt-dlp
+    # invoke ffmpeg and can hang (v0.2.44: no mplayer.log).
+    clear_play_files()
+    write_progress(0, "Downloading video")
+    run_ytd(["-f", "133/160", "-o", dest_tmpl], timeout=180, label="Downloading video")
+    got = take_download()
+    if not got or is_av1(got):
+        return None
+    log("picture ready %s" % got)
+    write_progress(100, "Video ready")
+
+    # Audio, time-boxed. ffmpeg mux needs libavdevice (missing on v0.2.45).
+    # Always write a sidecar so mplayer can use -audiofile even if mux fails.
+    run_ytd(
+        ["-f", "140/139/bestaudio[ext=m4a]", "-o", "/tmp/minios-ytplay.a.%(ext)s"],
+        timeout=50, label="Downloading audio",
+    )
+    import glob
+    sidecar = "/tmp/minios-ytplay.audio"
+    try:
+        if os.path.isfile(sidecar):
+            os.remove(sidecar)
+    except Exception:
+        pass
+    for p in glob.glob("/tmp/minios-ytplay.a.*"):
+        if os.path.isfile(p) and os.path.getsize(p) > 512:
+            try:
+                with open(sidecar, "w") as f:
+                    f.write(p + "\n")
+                log("audio sidecar %s" % p)
+            except Exception:
+                pass
+            break
+    muxed = mux_split_tracks(env)
+    # Regular YouTube still fetches captions here. Shorts wait for the CC click.
+    if os.path.exists("/tmp/minios-yt-shorts"):
+        log("sub skip shorts until CC click")
+    else:
+        fetch_captions(vid)
+    if muxed:
+        return muxed
+    log("play file %s (sidecar for audio)" % got)
+    return got
+
+
+def ytdlp_download_tiktok(url):
+    setup = "/opt/minios/minios-py311-setup"
+    if not os.path.isfile(setup):
+        setup = "/usr/local/bin/minios-py311-setup"
+    if not os.path.isfile(setup):
+        log("tiktok no py311 setup")
+        return None
+    try:
+        py = subprocess.check_output([setup], stderr=open(LOG, "a")).decode().strip()
+    except Exception as e:
+        log("tiktok py311 setup fail %s" % e)
+        return None
+    ytd = "/opt/minios/bin/yt-dlp-2026.08.19"
+    if not py or not os.path.isfile(py) or not os.path.isfile(ytd):
+        log("tiktok missing yt-dlp 2026")
+        return None
+    env = play_env()
+    dest_tmpl = "/tmp/minios-ytplay.%(ext)s"
+    clear_play_files()
+    write_progress(0, "Downloading video")
+    cmd = [
+        py, ytd,
+        "--no-playlist", "--newline", "--no-check-certificates",
+        "-f", "b[ext=mp4][vcodec^=avc]/b[ext=mp4]/b",
+        "-o", dest_tmpl,
+        "--", url,
+    ]
+    log("tiktok ytdlp " + " ".join(cmd))
+    try:
+        p = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=env, universal_newlines=True, bufsize=1,
+        )
+    except Exception as e:
+        log("tiktok ytdlp exc %s" % e)
+        return None
+    deadline = time.time() + 180
+    last_pct = -1
+    while True:
+        if time.time() > deadline:
+            try:
+                p.kill()
+            except Exception:
+                pass
+            log("tiktok timeout")
+            return None
+        line = p.stdout.readline() if p.stdout else ""
+        if line:
+            m = re.search(r"\[download\]\s+([\d.]+)%", line)
+            if m:
+                pct = int(float(m.group(1)))
+                if pct != last_pct:
+                    write_progress(pct, "Downloading video")
+                    last_pct = pct
+            elif "ERROR" in line or "error" in line[:20]:
+                log(line.rstrip()[:200])
+        elif p.poll() is not None:
+            break
+        else:
+            time.sleep(0.05)
+    rc = p.wait()
+    log("tiktok ytdlp rc=%s" % rc)
+    if rc != 0:
+        return None
+    write_progress(100, "Video ready")
+    return take_download()
+
+
+def ytdlp_download(vid):
+    py = "/usr/local/bin/python3.9"
+    if not os.path.isfile(py):
+        py = "python3"
+    ytd = "/opt/minios/bin/yt-dlp-2025.10.14"
+    if not os.path.isfile(ytd):
+        ytd = "/opt/minios/bin/yt-dlp-py39"
+    if not os.path.isfile(ytd):
+        log("no yt-dlp for download fallback")
+        return None
+    dest_tmpl = "/tmp/minios-ytplay.%(ext)s"
+    cmd = [
+        py, ytd,
+        "--no-playlist", "--no-warnings",
+        "--extractor-args", "youtube:player_client=tv,ios,web_safari",
+        "-f", "18/best[height<=360][ext=mp4]/best[height<=240]/worst",
+        "-o", dest_tmpl,
+        "--", "https://www.youtube.com/watch?v=" + vid,
+    ]
+    log("ytdlp " + " ".join(cmd))
+    try:
+        rc = subprocess.call(cmd, stdout=open(LOG, "a"), stderr=subprocess.STDOUT)
+    except Exception as e:
+        log("ytdlp exc %s" % e)
+        return None
+    log("ytdlp rc=%s" % rc)
+    return take_download()
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] == "--captions":
+        blob = " ".join(args[1:])
+        vid = video_id(blob)
+        if not vid:
+            log("cc no video id in: " + blob)
+            sys.exit(1)
+        got = fetch_captions(vid)
+        if got:
+            print(got)
+            sys.exit(0)
+        sys.exit(1)
+    blob = " ".join(args)
+    if is_tiktok(blob):
+        log("youtube-resolve refuses tiktok — use minios-tiktok-play")
+        sys.exit(1)
+    vid = video_id(blob)
+    if not vid:
+        log("no video id in: " + blob)
+        sys.exit(1)
+    log("resolve " + vid)
+    write_progress(0, "Starting download")
+    cached = read_cache(vid)
+    if cached:
+        if cached.startswith("/") and os.path.isfile(cached) and os.path.getsize(cached) > 1024:
+            print(cached)
+            sys.exit(0)
+        if cached.startswith("http"):
+            print(cached)
+            sys.exit(0)
+    # Play: python 3.11 + yt-dlp 2026.08.19 can still list DASH 240p.
+    local = ytdlp_download_2026(vid)
+    if local:
+        write_cache(vid, local)
+        print(local)
+        sys.exit(0)
+    if not recent_fail(vid):
+        remote = try_piped(vid)
+        if not remote:
+            remote = try_invidious(vid)
+        if remote:
+            write_cache(vid, remote)
+            print(remote)
+            sys.exit(0)
+        old = ytdlp_download(vid)
+        if old:
+            write_cache(vid, old)
+            print(old)
+            sys.exit(0)
+    log("all methods failed")
+    write_fail(vid)
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

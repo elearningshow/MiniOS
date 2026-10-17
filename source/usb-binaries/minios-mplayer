@@ -1,0 +1,331 @@
+#!/bin/sh
+# Play a local file or URL. Mount the full mplayer tree first.
+export PATH="/opt/minios/bin:/tmp/tcloop/ffmpeg4/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-mplayer.log
+{
+  echo "===== minios-mplayer $(date -u) ====="
+  echo "argv: $*"
+} >>"$LOG"
+
+if [ -f /tmp/minios-mp.quit ]; then
+  if pgrep -x minios-player-bar >/dev/null 2>&1; then
+    echo "user quit, not starting mplayer" >>"$LOG"
+    exit 0
+  fi
+  rm -f /tmp/minios-mp.quit
+  echo "cleared stale quit for a new play" >>"$LOG"
+fi
+if [ -n "${MINIOS_PLAY_GEN:-}" ]; then
+  nowgen=$(cat /tmp/minios-play-gen 2>/dev/null || echo 0)
+  if [ "$MINIOS_PLAY_GEN" != "$nowgen" ]; then
+    echo "stale gen $MINIOS_PLAY_GEN now=$nowgen, not starting mplayer" >>"$LOG"
+    exit 0
+  fi
+fi
+# Always replace a leftover decoder when the MiniOS player is already up.
+# The old "already running" path popped xmessage and left the wallpaper showing.
+if [ -x /opt/minios/minios-loading ]; then
+  /opt/minios/minios-loading stop >/dev/null 2>&1 || true
+fi
+pkill -x xmessage >/dev/null 2>&1 || true
+# Queue play: the bar already stopped the previous mplayer. Do not pkill
+# here — that killed a just-started picture and the bar treated it as EOF.
+if [ -z "${MINIOS_QUEUE_PLAY:-}" ] && pgrep -x mplayer >/dev/null 2>&1; then
+  echo "replace leftover mplayer" >>"$LOG"
+  if [ -p /tmp/minios-mp.cmd ]; then
+    ( echo quit > /tmp/minios-mp.cmd ) &
+    qpid=$!
+    sleep 0.2
+    kill "$qpid" 2>/dev/null || true
+  fi
+  pkill -x mplayer 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 20 ] && pgrep -x mplayer >/dev/null 2>&1; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  pkill -9 -x mplayer 2>/dev/null || true
+  sleep 0.1
+fi
+
+if [ -x /opt/minios/minios-sound-up ]; then
+  sudo -n /opt/minios/minios-sound-up libs-only >>"$LOG" 2>&1 || \
+    /opt/minios/minios-sound-up libs-only >>"$LOG" 2>&1 || true
+  # Card is already up from YouTube start. Do not remount 100 tczs on every play.
+  if [ ! -e /dev/snd/pcmC0D0p ]; then
+    sudo -n /opt/minios/minios-sound-up >>"$LOG" 2>&1 || \
+      /opt/minios/minios-sound-up >>"$LOG" 2>&1 || true
+  else
+    echo "snd already up" >>"$LOG"
+  fi
+fi
+echo "snd=$(ls /dev/snd 2>&1 | tr '\n' ' ')" >>"$LOG"
+
+LD_LIBRARY_PATH="/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+for d in /tmp/tcloop/*/usr/local/lib /tmp/tcloop/*/usr/lib; do
+  [ -d "$d" ] || continue
+  LD_LIBRARY_PATH="$d:$LD_LIBRARY_PATH"
+done
+export LD_LIBRARY_PATH
+
+REAL=""
+for b in \
+  /tmp/tcloop/mplayer-cli/usr/local/bin/mplayer \
+  /usr/bin/mplayer
+do
+  if [ -x "$b" ]; then
+    REAL="$b"
+    break
+  fi
+done
+if [ -z "$REAL" ] && [ -x /usr/local/bin/mplayer ]; then
+  if ! head -1 /usr/local/bin/mplayer 2>/dev/null | grep -q '^#!'; then
+    REAL=/usr/local/bin/mplayer
+  fi
+fi
+if [ -z "$REAL" ]; then
+  echo "mplayer binary missing" >>"$LOG"
+  exit 127
+fi
+
+if command -v ldd >/dev/null 2>&1; then
+  echo "----- ldd -----" >>"$LOG"
+  ldd "$REAL" 2>&1 | grep -i "not found" >>"$LOG" || echo "ldd_ok" >>"$LOG"
+fi
+
+# Drop FLTube -vo/-ao/-cache. Xvesa has no XVideo (v0.2.39: VO_XV not supported).
+NEWARGS=""
+skip=
+localfile=
+for a in "$@"; do
+  if [ -n "$skip" ]; then
+    skip=
+    continue
+  fi
+  case "$a" in
+    -vo|-ao|-demuxer|-cache|-cache-min)
+      skip=1
+      continue
+      ;;
+    -vo*|-ao*)
+      continue
+      ;;
+    /tmp/*|/*.mp4|/*.m4a|/*.mkv)
+      localfile=1
+      ;;
+  esac
+  NEWARGS="$NEWARGS \"$a\""
+done
+
+YTPLAY=0
+LOCALYT=0
+case " $* " in
+  *youtube.com*|*youtu.be*) YTPLAY=1 ;;
+esac
+case " $* " in
+  *'/tmp/minios-ytplay.'*|*'/tmp/minios-ytplay/'*)
+    YTPLAY=1
+    LOCALYT=1
+    ;;
+esac
+# Sidecar AAC only for a YouTube play. Never glue the last clip onto an MP3.
+# A Piped/HTTP stream already has sound — do not attach the previous file.
+AUDIO=""
+SUB=""
+case " $* " in
+  *'http://'*|*'https://'*)
+    YTSTREAM=1
+    ;;
+  *)
+    YTSTREAM=0
+    ;;
+esac
+if [ "$YTPLAY" = 1 ] && [ "$YTSTREAM" != 1 ]; then
+  if [ -f /tmp/minios-ytplay.audio ]; then
+    AUDIO=$(head -1 /tmp/minios-ytplay.audio)
+  fi
+  if [ -z "$AUDIO" ] || [ ! -f "$AUDIO" ]; then
+    for a in /tmp/minios-ytplay.a.m4a /tmp/minios-ytplay.a.aac; do
+      [ -f "$a" ] && AUDIO="$a" && break
+    done
+  fi
+  if [ -f /tmp/minios-ytplay.sub ]; then
+    SUB=$(head -1 /tmp/minios-ytplay.sub)
+  fi
+  if [ -z "$SUB" ] || [ ! -f "$SUB" ]; then
+    for s in /tmp/minios-ytplay.en.srt /tmp/minios-ytplay.en.vtt /tmp/minios-ytplay.srt; do
+      [ -f "$s" ] && SUB="$s" && break
+    done
+  fi
+fi
+AF=""
+if [ -n "$AUDIO" ] && [ -f "$AUDIO" ]; then
+  AF="-audiofile \"$AUDIO\""
+  echo "audiofile=$AUDIO" >>"$LOG"
+else
+  echo "audiofile=none" >>"$LOG"
+fi
+SF=""
+if [ -n "$SUB" ] && [ -f "$SUB" ]; then
+  SF="-sub \"$SUB\" -utf8"
+  echo "subfile=$SUB" >>"$LOG"
+else
+  echo "subfile=none" >>"$LOG"
+fi
+FONT=""
+for f in \
+  /usr/local/share/fonts/truetype/DejaVuSans.ttf \
+  /usr/local/share/fonts/dejavu/DejaVuSans.ttf \
+  /tmp/tcloop/dejavu-fonts-ttf/usr/local/share/fonts/truetype/ttf-dejavu/DejaVuSans.ttf \
+  /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+do
+  if [ -f "$f" ]; then
+    FONT="-font \"$f\" -subfont \"$f\" -subfont-text-scale 5"
+    echo "subfont=$f" >>"$LOG"
+    break
+  fi
+done
+if [ -z "$FONT" ]; then
+  echo "subfont=none (OSD font)" >>"$LOG"
+fi
+
+rm -f /tmp/minios-mp.cmd /tmp/minios-mp.out /tmp/minios-mp.pid /tmp/minios-mp.fail
+mkfifo /tmp/minios-mp.cmd 2>/dev/null || true
+: >/tmp/minios-mp.out
+# Keep a writer so mplayer does not block forever on the fifo.
+exec 3<>/tmp/minios-mp.cmd
+
+BAR=/opt/minios/minios-player-bar
+[ -x "$BAR" ] || BAR=/usr/local/bin/minios-player-bar
+bar_up() {
+  pgrep -f '/opt/minios/minios-player-bar' >/dev/null 2>&1 && return 0
+  pgrep -f '/usr/local/bin/minios-player-bar' >/dev/null 2>&1 && return 0
+  return 1
+}
+# A leftover Shorts flag must not turn an MP3 into a YouTube play.
+if [ "$YTPLAY" = 1 ]; then
+  printf 'youtube\n' >/tmp/minios-player-mode
+  # A finished local file must not reload the bar — that killed the download.
+  if [ "$LOCALYT" != 1 ]; then
+    echo 1 >/tmp/minios-mp.reload
+  fi
+  # Drop a leftover landscape geom from a dock session so Shorts get 9:16.
+  if [ -f /tmp/minios-yt-shorts ] || [ -f /tmp/minios-yt-tiktok ]; then
+    rm -f /tmp/minios-mp.geom
+  fi
+fi
+if [ -x "$BAR" ] && ! bar_up; then
+  if [ -f /tmp/minios-mp.quit ]; then
+    echo "user quit, not starting bar" >>"$LOG"
+    exit 0
+  fi
+  if [ "$YTPLAY" = 1 ]; then
+    "$BAR" --youtube >>"$LOG" 2>&1 &
+  else
+    "$BAR" >>"$LOG" 2>&1 &
+  fi
+  echo "player_bar_pid=$!" >>"$LOG"
+fi
+if [ -x /opt/minios/minios-loading ]; then
+  /opt/minios/minios-loading stop >/dev/null 2>&1 || true
+fi
+# Leave the bottom bar visible. Do not use -wid (v0.2.49 hid the picture).
+geom=""
+i=0
+while [ "$i" -lt 20 ]; do
+  if [ -s /tmp/minios-mp.geom ]; then
+    geom=$(head -1 /tmp/minios-mp.geom)
+    break
+  fi
+  i=$((i + 1))
+  sleep 1
+done
+if [ "$YTPLAY" = 1 ] && { [ -f /tmp/minios-yt-shorts ] || [ -f /tmp/minios-yt-tiktok ]; }; then
+  if [ -n "$geom" ]; then
+    gw=$(echo "$geom" | awk -F'[x+]' '{print $1+0}')
+    gh=$(echo "$geom" | awk -F'[x+]' '{print $2+0}')
+    gx=$(echo "$geom" | awk -F'[x+]' '{print $3+0}')
+    gy=$(echo "$geom" | awk -F'[x+]' '{print $4+0}')
+    if [ "${gw:-0}" -gt "${gh:-0}" ] && [ "${gh:-0}" -gt 40 ]; then
+      nw=$((gh * 9 / 16))
+      [ "$nw" -lt 120 ] && nw=120
+      gx=$((gx + (gw - nw) / 2))
+      geom="${nw}x${gh}+${gx}+${gy}"
+      echo "geom_shorts_fix=$geom" >>"$LOG"
+    fi
+  else
+    geom="360x640+332+40"
+    echo "geom=default 9:16 $geom" >>"$LOG"
+  fi
+fi
+GEOARG=""
+if [ -n "$geom" ]; then
+  GEOARG="-geometry $geom -noborder"
+  echo "geom=$geom" >>"$LOG"
+else
+  GEOARG="-fs"
+  echo "geom=missing using -fs" >>"$LOG"
+fi
+
+# -zoom fills the geometry. Shorts and TikTok stay 9:16.
+ASPECT=""
+if [ "$YTPLAY" = 1 ] && { [ -f /tmp/minios-yt-shorts ] || [ -f /tmp/minios-yt-tiktok ]; }; then
+  ASPECT="-aspect 9:16"
+  echo "vertical aspect 9:16" >>"$LOG"
+fi
+# Default: play the file once. Loop One/All are the MiniOS bar's job
+# (next clip on EOF). mplayer -loop 0 is forever and hid Auto next.
+LOOPARG="-loop 1"
+if [ "${MINIOS_LOOP:-0}" = 1 ]; then
+  LOOPARG="-loop 0"
+  echo "loop=forever" >>"$LOG"
+else
+  echo "loop=off play once" >>"$LOG"
+fi
+printf '100\nPlaying media file\n' >/tmp/minios-dl.progress
+echo "player-v38 exec $REAL -slave -quiet -input file=/tmp/minios-mp.cmd $GEOARG $ASPECT $LOOPARG -zoom -vo x11 -ao alsa,oss,null -demuxer lavf -osdlevel 1 -softvol -softvol-max 100 $FONT $AF $SF $NEWARGS" >>"$LOG"
+eval "\"$REAL\" -slave -quiet -input file=/tmp/minios-mp.cmd $GEOARG $ASPECT $LOOPARG -zoom -vo x11 -ao alsa,oss,null -demuxer lavf -osdlevel 1 -softvol -softvol-max 100 $FONT $AF $SF $NEWARGS" >>/tmp/minios-mp.out 2>&1 &
+mpid=$!
+echo "$mpid" >/tmp/minios-mp.pid
+# The fifo wrapper pid is not always the mplayer binary. Record the real one.
+i=0
+while [ "$i" -lt 10 ]; do
+  realpid=$(pgrep -x mplayer 2>/dev/null | head -1)
+  if [ -n "$realpid" ]; then
+    echo "$realpid" >/tmp/minios-mp.pid
+    echo "mplayer_realpid=$realpid" >>"$LOG"
+    break
+  fi
+  i=$((i + 1))
+  sleep 1
+done
+echo "mplayer_pid=$mpid player=MiniOS-Player-v21" >>"$LOG"
+wait "$mpid"
+rc=$?
+# Do not retry without slave. The first process exiting made the bar think
+# the clip was over, so it started the next download and killed this picture.
+nowgen=$(cat /tmp/minios-play-gen 2>/dev/null || echo 0)
+expect="${MINIOS_PLAY_GEN:-0}"
+started=0
+grep -q 'Starting playback' /tmp/minios-mp.out 2>/dev/null && started=1
+grep -q 'VO: \[x11\]' /tmp/minios-mp.out 2>/dev/null && started=1
+grep -q 'AO: \[' /tmp/minios-mp.out 2>/dev/null && started=1
+grep -q '^Playing ' /tmp/minios-mp.out 2>/dev/null && started=1
+# Audio-only files often have no VO line. A clean exit still ends the clip.
+[ "$rc" -eq 0 ] && started=1
+echo "mplayer_exit=$rc started=$started expect=$expect nowgen=$nowgen" >>"$LOG"
+if [ "$expect" = "$nowgen" ] && [ "$started" = 1 ]; then
+  # Normal end of this clip. The bar advances only when it sees this file.
+  printf '%s\n' "$expect" >/tmp/minios-mp.done
+  echo "player-v21 wrote done gen=$expect" >>"$LOG"
+else
+  echo "player-v21 no done file (killed, stale, or never started)" >>"$LOG"
+fi
+cat /tmp/minios-mp.out >>"$LOG" 2>/dev/null || true
+rm -f /tmp/minios-mp.cmd /tmp/minios-mp.pid
+# Never tear the bar down here. Next / Auto reuse it and show loading.
+# Only Quit on the bar itself closes the player.
+if [ -x /opt/minios/minios-log-usb ]; then
+  sudo -n /opt/minios/minios-log-usb mplayer >/dev/null 2>&1 &
+fi
+exit "$rc"

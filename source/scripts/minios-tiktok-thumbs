@@ -1,0 +1,156 @@
+#!/bin/sh
+# Fetch oembed thumbnails for stored TikTok rows. Writes /tmp/minios-tt-thumbs/N.ppm
+# Args: START COUNT  (default 0 5). Skips rows that already have a ppm.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LIST=/tmp/minios-tt-thumb-page.txt
+DIR=/tmp/minios-tt-thumbs
+LOG=/tmp/minios-tiktok-thumbs.log
+START="${1:-0}"
+COUNT="${2:-5}"
+echo $$ >/tmp/minios-tt-thumbs.pid
+{
+  echo "===== thumbs $(date -u) start=$START count=$COUNT ====="
+} >>"$LOG"
+[ -s "$LIST" ] || { rm -f /tmp/minios-tt-thumbs.pid; exit 0; }
+mkdir -p "$DIR"
+
+PY=""
+if [ -x /usr/local/bin/python3.9 ]; then
+  PY=/usr/local/bin/python3.9
+elif command -v python3.9 >/dev/null 2>&1; then
+  PY=$(command -v python3.9)
+elif command -v python3 >/dev/null 2>&1; then
+  PY=$(command -v python3)
+fi
+
+if [ -x /opt/minios/minios-sound-up ]; then
+  /opt/minios/minios-sound-up libs-only >>"$LOG" 2>&1 || true
+fi
+if [ ! -x /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg ] && \
+   ! command -v ffmpeg >/dev/null 2>&1; then
+  if [ -x /opt/minios/minios-load-tcz ]; then
+    /opt/minios/minios-load-tcz ffmpeg4 >>"$LOG" 2>&1 || true
+    if [ -x /opt/minios/minios-appkit ]; then
+      /opt/minios/minios-appkit note tiktok ffmpeg4 >>"$LOG" 2>&1 || true
+    fi
+  fi
+fi
+FF=""
+if [ -x /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg ]; then
+  FF=/tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg
+elif command -v ffmpeg >/dev/null 2>&1; then
+  FF=$(command -v ffmpeg)
+fi
+
+UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+n=0
+got=0
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  if [ "$n" -lt "$START" ]; then
+    n=$((n + 1))
+    continue
+  fi
+  [ "$got" -ge "$COUNT" ] && break
+  url=$(printf '%s' "$line" | awk -F'\t' '{print $2}')
+  case "$url" in
+    *tiktok.com*) ;;
+    *) n=$((n + 1)); got=$((got + 1)); continue ;;
+  esac
+  id=$(printf '%s\n' "$url" | sed -n 's#.*/video/\([0-9][0-9]*\).*#\1#p')
+  if [ -z "$id" ]; then
+    n=$((n + 1))
+    got=$((got + 1))
+    continue
+  fi
+  oe=/tmp/minios-tt-oe.json
+  jpg="$DIR/$id.jpg"
+  ppm="$DIR/$id.ppm"
+  thumb=""
+  rm -f "$oe" "$jpg"
+  if [ -s "$ppm" ]; then
+    n=$((n + 1))
+    got=$((got + 1))
+    continue
+  fi
+  # tikwm returns a cover image without the oembed wall.
+  if [ -n "$PY" ] && command -v curl >/dev/null 2>&1; then
+    tw="$DIR/$id.json"
+    rm -f "$tw"
+    curl -L --max-time 10 -A "$UA" -o "$tw" \
+      "https://www.tikwm.com/api/?hd=0&url=$(printf '%s' "$url" | sed 's/ /%20/g')" \
+      >>"$LOG" 2>&1 || true
+    if [ -s "$tw" ]; then
+      thumb=$("$PY" -c 'import json,sys,re
+try:
+    d=json.load(open(sys.argv[1]))
+    info=d.get("data") or {}
+    if not isinstance(info, dict):
+        info = {}
+    want = sys.argv[2] if len(sys.argv) > 2 else ""
+    m = re.search(r"/video/([0-9]+)", want)
+    got = str(info.get("id") or info.get("aweme_id") or "")
+    if m and got and m.group(1) != got:
+        print("")
+    else:
+        print(info.get("origin_cover") or info.get("cover") or "")
+except Exception:
+    print("")' "$tw" "$url" 2>/dev/null || true)
+    fi
+    rm -f "$tw"
+  fi
+  if [ -z "$thumb" ]; then
+    encurl="$url"
+    if [ -n "$PY" ]; then
+      encurl=$("$PY" -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$url" 2>/dev/null || printf '%s' "$url")
+    fi
+    if command -v curl >/dev/null 2>&1; then
+      curl -L --max-time 8 -A "$UA" -o "$oe" \
+        "https://www.tiktok.com/oembed?url=${encurl}" >>"$LOG" 2>&1 || true
+    elif command -v wget >/dev/null 2>&1; then
+      wget -q -O "$oe" --user-agent="$UA" --timeout=8 \
+        "https://www.tiktok.com/oembed?url=${encurl}" >>"$LOG" 2>&1 || true
+    fi
+    if [ -s "$oe" ]; then
+      if [ -n "$PY" ]; then
+        thumb=$("$PY" -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1])).get("thumbnail_url","") or "")
+except Exception:
+    print("")' "$oe" 2>/dev/null || true)
+      else
+        thumb=$(sed -n 's/.*"thumbnail_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$oe" | head -1)
+      fi
+    fi
+  fi
+  if [ -z "$thumb" ]; then
+    page=/tmp/minios-tt-page.html
+    rm -f "$page"
+    if command -v curl >/dev/null 2>&1; then
+      curl -L --max-time 8 -A "facebookexternalhit/1.1" -o "$page" "$url" >>"$LOG" 2>&1 || true
+    elif command -v wget >/dev/null 2>&1; then
+      wget -q -O "$page" --user-agent="facebookexternalhit/1.1" --timeout=8 "$url" >>"$LOG" 2>&1 || true
+    fi
+    if [ -s "$page" ]; then
+      thumb=$(sed -n 's/.*property="og:image" content="\([^"]*\)".*/\1/p' "$page" | head -1)
+      [ -n "$thumb" ] || thumb=$(sed -n 's/.*content="\([^"]*\)" property="og:image".*/\1/p' "$page" | head -1)
+    fi
+    rm -f "$page"
+  fi
+  if [ -n "$thumb" ]; then
+    echo "thumb $n $thumb" >>"$LOG"
+    if command -v curl >/dev/null 2>&1; then
+      curl -L --max-time 8 -A "$UA" -o "$jpg" "$thumb" >>"$LOG" 2>&1 || true
+    elif command -v wget >/dev/null 2>&1; then
+      wget -q -O "$jpg" --user-agent="$UA" --timeout=8 "$thumb" >>"$LOG" 2>&1 || true
+    fi
+  fi
+  if [ -s "$jpg" ] && [ -n "$FF" ]; then
+    "$FF" -y -i "$jpg" -vf "scale=88:56" -pix_fmt rgb24 "$ppm" >>"$LOG" 2>&1 || true
+  fi
+  rm -f "$oe" "$jpg"
+  n=$((n + 1))
+  got=$((got + 1))
+done < "$LIST"
+rm -f /tmp/minios-tt-thumbs.pid /tmp/minios-tt-oe.json
+exit 0

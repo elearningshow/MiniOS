@@ -1,0 +1,65 @@
+#!/bin/sh
+# Patch the live Tiny Core session so Xvesa does not die on Ctrl+Alt+Delete.
+# Do not write /home/tc/.xsession into core.gz. Do not wrap Xvesa (it is setuid).
+# /usr/local/bin/Xvesa from Xvesa.tcz accepts -nozap. /usr/bin/Xvesa does not exist.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-xvesa-nozap.log
+REAL=/usr/local/bin/Xvesa
+
+note() { echo "minios-xvesa-nozap: $*" >>"$LOG"; }
+
+if [ ! -x "$REAL" ]; then
+  note "Xvesa not ready"
+  exit 0
+fi
+if ! strings "$REAL" 2>/dev/null | grep -q -- '-nozap'; then
+  note "binary has no -nozap; leaving session alone"
+  exit 0
+fi
+
+patch_one() {
+  f="$1"
+  [ -f "$f" ] || return 0
+  grep -q Xvesa "$f" || return 0
+  if grep -q '/usr/local/bin/Xvesa' "$f" && grep -q -- '-nozap' "$f"; then
+    chmod 0755 "$f" 2>/dev/null || true
+    return 0
+  fi
+  # Full path so the shell never execs a missing Xvesa (No such file or directory).
+  sed -i 's#\(^[[:space:]]*\)Xvesa #\1/usr/local/bin/Xvesa #' "$f"
+  if ! grep -q -- '-nozap' "$f"; then
+    sed -i 's#/usr/local/bin/Xvesa #/usr/local/bin/Xvesa -nozap #' "$f"
+  fi
+  # startx does: exec $HOME/.xsession
+  # A 0644 file with no shebang prints: No such file or directory
+  chmod 0755 "$f" 2>/dev/null || true
+  note "patched $f"
+}
+
+for f in /home/tc/.xsession /etc/skel/.xsession; do
+  patch_one "$f"
+done
+
+# Replace the read-only Xlibs startx symlink with a wrapper that patches
+# .xsession after xsetup.sh creates it and before exec.
+STOCK=/opt/minios/startx.stock
+WRAP=/opt/minios/minios-startx
+if [ -x /usr/local/bin/startx ] && [ -x "$WRAP" ]; then
+  if ! grep -q minios-startx-wrap /usr/local/bin/startx 2>/dev/null; then
+    if [ -L /usr/local/bin/startx ]; then
+      SRC=$(readlink -f /usr/local/bin/startx)
+    else
+      SRC=/usr/local/bin/startx
+    fi
+    if [ -n "$SRC" ] && [ -x "$SRC" ] && [ "$SRC" != "$WRAP" ]; then
+      cp -f "$SRC" "$STOCK" 2>/dev/null || true
+    fi
+    if [ -x "$STOCK" ]; then
+      rm -f /usr/local/bin/startx
+      cp -f "$WRAP" /usr/local/bin/startx
+      chmod 0755 /usr/local/bin/startx
+      note "installed startx wrap"
+    fi
+  fi
+fi
+exit 0

@@ -1,0 +1,57 @@
+#!/bin/sh
+# Same one-click notice as the dock icons (minios-run).
+# Usage: minios-loading [seconds] [message]
+#        minios-loading stop   — close the notice once the app window is up
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+PIDF=/tmp/minios-loading.pid
+LOCK=/tmp/minios-run-alert.lock
+
+if [ "${1:-}" = "stop" ]; then
+  if [ -f "$PIDF" ]; then
+    pid=$(cat "$PIDF" 2>/dev/null)
+    if [ -n "$pid" ]; then
+      pkill -P "$pid" >/dev/null 2>&1 || true
+      kill "$pid" >/dev/null 2>&1 || true
+    fi
+    rm -f "$PIDF"
+  fi
+  pkill -x xmessage >/dev/null 2>&1 || true
+  pkill -f 'xmessage -center' >/dev/null 2>&1 || true
+  rm -f "$LOCK"
+  exit 0
+fi
+
+secs=15
+msg="Application is loading. Please wait."
+if [ -n "${1:-}" ]; then
+  case "$1" in
+    ''|*[!0-9]*) ;;
+    *) secs="$1"; shift ;;
+  esac
+fi
+if [ "$#" -gt 0 ]; then
+  msg="$*"
+fi
+if [ -f "$LOCK" ]; then
+  exit 0
+fi
+touch "$LOCK"
+(
+  if command -v xmessage >/dev/null 2>&1; then
+    xmessage -center -timeout "$secs" "$msg" &
+    echo $! >"$PIDF"
+    wait
+  elif command -v aterm >/dev/null 2>&1; then
+    aterm +tr +sb -bg black -fg white -T MiniOS -geometry 52x3+200+180 \
+      -e sh -c "echo \"$msg\"; sleep $secs" &
+    echo $! >"$PIDF"
+    wait
+  elif command -v popup >/dev/null 2>&1; then
+    popup "$msg" &
+    echo $! >"$PIDF"
+    wait
+  fi
+  rm -f "$LOCK" "$PIDF"
+) >/dev/null 2>&1 &
+exit 0

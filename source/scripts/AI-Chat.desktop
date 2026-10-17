@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=AI Chat
+Comment=Ask a question on the MiniOS AI chat
+Exec=/usr/local/bin/minios-run ai -- /usr/local/bin/minios-ai-chat
+Icon=ai
+X-FullPathIcon=/opt/minios/ai.png
+Terminal=false
+Categories=Network;
+StartupNotify=false

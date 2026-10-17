@@ -1,0 +1,21 @@
+{
+  "manifest_version": 2,
+  "name": "MiniOS View Image",
+  "version": "1.0",
+  "description": "Right-click or Open Image in New Tab shows that one picture. Page images stay off.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "minios-view-image@minios",
+      "strict_min_version": "115.0"
+    }
+  },
+  "permissions": [
+    "tabs",
+    "webRequest",
+    "contextMenus",
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  }
+}

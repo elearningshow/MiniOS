@@ -1,0 +1,6 @@
+build/
+*~
+*.mo
+*.orig
+*.deb
+web/

@@ -1,0 +1,172 @@
+#!/bin/sh
+# One chat turn. The model runs on the network. Prints the reply.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-ai.log
+HIST=/tmp/minios-ai-hist.json
+REQ=/tmp/minios-ai-req.json
+REPLY=/tmp/minios-ai-reply.json
+OUT=/tmp/minios-ai-out.txt
+question="$*"
+CHOICE=/home/tc/.minios/ai-service
+model=openai
+url="https://text.pollinations.ai/openai"
+key="-"
+if [ -f "$CHOICE" ]; then
+  model=$(sed -n '1p' "$CHOICE" 2>/dev/null || true)
+  url=$(sed -n '2p' "$CHOICE" 2>/dev/null || true)
+  key=$(sed -n '3p' "$CHOICE" 2>/dev/null || true)
+fi
+[ -n "$model" ] || model=openai
+[ -n "$url" ] || url="https://text.pollinations.ai/openai"
+[ -n "$key" ] || key="-"
+
+py_libs() {
+  if [ -d /tmp/tcloop/python3.9/usr/local/lib ]; then
+    LD_LIBRARY_PATH="/tmp/tcloop/python3.9/usr/local/lib:${LD_LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH
+  fi
+}
+
+py_works() {
+  p="$1"
+  [ -n "$p" ] && [ -x "$p" ] || return 1
+  py_libs
+  "$p" -c 'print(1)' >>"$LOG" 2>&1
+}
+
+find_py() {
+  for p in \
+    /usr/local/bin/python3.9 \
+    /tmp/tcloop/python3.9/usr/local/bin/python3.9 \
+    /usr/local/bin/python3 \
+    /usr/bin/python3
+  do
+    if py_works "$p"; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+fail() {
+  printf '%s\n' "$1" >"$OUT"
+  exit 1
+}
+
+[ -n "$question" ] || fail "Type a message first."
+export MINIOS_AI_MODEL="$model"
+py=$(find_py) || true
+if [ -z "$py" ] && [ -x /opt/minios/minios-load-tcz ]; then
+  /opt/minios/minios-load-tcz python3.9 >>"$LOG" 2>&1 || true
+  py=$(find_py) || true
+fi
+[ -n "$py" ] || fail "The answer helper is not available."
+
+"$py" - "$HIST" "$REQ" "$question" "$model" "$url" "$key" <<'PY' || fail "The question could not be sent."
+import json, sys
+hist_path, req_path, question, model, url, key = sys.argv[1:7]
+system = (
+    "You are MiniOS AI, a helper on a very small computer. "
+    "Answer in plain sentences. Stay under 120 words."
+)
+try:
+    old = json.load(open(hist_path, "r", encoding="utf-8"))
+except Exception:
+    old = []
+if not isinstance(old, list):
+    old = []
+kept = []
+for item in old:
+    if not isinstance(item, dict):
+        continue
+    role = item.get("role")
+    text = " ".join(str(item.get("content") or "").split())
+    if role not in ("user", "assistant") or not text:
+        continue
+    kept.append({"role": role, "content": text[:700]})
+kept.append({"role": "user", "content": " ".join(question.split())[:700]})
+kept = kept[-6:]
+body = {
+    "model": model or "openai",
+    "messages": [{"role": "system", "content": system}] + kept,
+    "stream": False,
+    "max_tokens": 220,
+}
+json.dump(body, open(req_path, "w", encoding="utf-8"))
+json.dump(kept, open(hist_path, "w", encoding="utf-8"))
+PY
+
+rm -f "$REPLY"
+echo "chat post" >>"$LOG"
+CP=""
+cleanup() {
+  if [ -n "$CP" ]; then
+    kill "$CP" 2>/dev/null || true
+    CP=""
+  fi
+}
+trap cleanup EXIT INT TERM
+run_curl() {
+  if [ "$1" = k ]; then
+    flags="-kfsSL"
+  else
+    flags="-fsSL"
+  fi
+  if [ "$key" != "-" ]; then
+    curl $flags --max-time 45 -A "Mozilla/5.0 MiniOS/0.2.166" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $key" \
+      --data-binary @"$REQ" \
+      -o "$REPLY" "$url" >>"$LOG" 2>&1 &
+  else
+    curl $flags --max-time 45 -A "Mozilla/5.0 MiniOS/0.2.166" \
+      -H "Content-Type: application/json" \
+      --data-binary @"$REQ" \
+      -o "$REPLY" "$url" >>"$LOG" 2>&1 &
+  fi
+  CP=$!
+  wait "$CP"
+  st=$?
+  CP=""
+  return "$st"
+}
+run_curl ok || run_curl k || true
+[ -s "$REPLY" ] || fail "The chat service did not answer. Check the Wi-Fi."
+
+"$py" - "$REPLY" "$HIST" "$OUT" <<'PY'
+import json, sys
+reply_path, hist_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    data = json.load(open(reply_path, "r", encoding="utf-8", errors="replace"))
+except Exception:
+    open(out_path, "w").write("The reply was not readable.\n")
+    sys.exit(0)
+text = ""
+if isinstance(data, dict):
+    choices = data.get("choices") or []
+    if choices and isinstance(choices[0], dict):
+        msg = choices[0].get("message") or {}
+        if isinstance(msg, dict):
+            text = str(msg.get("content") or "")
+    if not text:
+        err = data.get("error")
+        if isinstance(err, str):
+            text = err
+        elif isinstance(err, dict):
+            text = str(err.get("message") or "")
+text = " ".join(text.split())
+text = text.encode("ascii", "replace").decode("ascii")
+if not text:
+    text = "No reply was returned."
+try:
+    hist = json.load(open(hist_path, "r", encoding="utf-8"))
+except Exception:
+    hist = []
+if not isinstance(hist, list):
+    hist = []
+hist.append({"role": "assistant", "content": text[:700]})
+json.dump(hist[-6:], open(hist_path, "w", encoding="utf-8"))
+open(out_path, "w", encoding="utf-8").write(text + "\n")
+PY
+exit 0

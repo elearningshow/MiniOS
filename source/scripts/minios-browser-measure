@@ -1,0 +1,76 @@
+#!/bin/sh
+# BROWSER-AP-01 v2.0 — photographable measurement helper (Gateway MA3).
+# Does not install Falkon (no package). Records baseline + Firefox load.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export HOME="${HOME:-/home/tc}"
+LOG=/tmp/minios-browser-measure.log
+USB_LOG=""
+
+usb_root() {
+  for d in /mnt/*; do
+    [ -d "$d/cde/optional" ] && echo "$d" && return 0
+  done
+  return 1
+}
+
+{
+  echo "===================================================="
+  echo "  BROWSER-AP-01 v2.0 — measurement (photograph this)"
+  echo "  $(date 2>/dev/null)"
+  echo "===================================================="
+  echo "Falkon: not packaged on Tiny Core 16.2 32-bit (no falkon.tcz,"
+  echo "no Qt WebEngine). This run can only measure Firefox ESR 140."
+  echo
+  echo "----- swap / memory (must be ~727 MB swap) -----"
+  if command -v free >/dev/null 2>&1; then
+    free -h 2>/dev/null || free -m
+  else
+    free -m
+  fi
+  echo
+  echo "----- /proc/swaps -----"
+  cat /proc/swaps 2>/dev/null || true
+  echo
+  echo "----- earlyoom -----"
+  if pgrep -x earlyoom >/dev/null 2>&1; then
+    echo "earlyoom: RUNNING"
+    pgrep -a earlyoom || true
+  else
+    echo "earlyoom: NOT RUNNING (not in Tiny Core repo; see execution report)"
+  fi
+  echo
+  echo "----- minios-run -----"
+  command -v minios-run >/dev/null 2>&1 && echo "minios-run: PRESENT" || echo "minios-run: MISSING"
+  echo
+  echo "----- which browsers -----"
+  for b in falkon firefox netsurf dillo midori; do
+    if command -v "$b" >/dev/null 2>&1; then
+      echo "  $b: $(command -v "$b")"
+    else
+      echo "  $b: not on PATH"
+    fi
+  done
+  if [ -x /usr/local/bin/minios-firefox ]; then
+    echo "  minios-firefox: PRESENT (embedded ESR 140)"
+  fi
+  echo
+  echo "----- top RSS (baseline, no extra browser click yet) -----"
+  ps aux 2>/dev/null | awk 'NR==1 || NR>1 {print}' | head -1
+  ps aux --sort=-rss 2>/dev/null | head -20 || ps aux | head -20
+  echo
+  echo "After you click Firefox and open Google + one YouTube tab,"
+  echo "run this helper AGAIN and photograph the new free -h / RSS."
+  echo "Falkon cannot be compared until a Falkon package exists."
+  echo "===================================================="
+} 2>&1 | tee "$LOG"
+
+root=$(usb_root 2>/dev/null || true)
+if [ -n "$root" ] && [ -w "$root" ]; then
+  cp -f "$LOG" "$root/BROWSER-AP-01-v2.0-MEASURE.txt" 2>/dev/null || true
+  echo "Copied to $root/BROWSER-AP-01-v2.0-MEASURE.txt"
+fi
+echo
+echo "Log: $LOG"
+echo -n "Press Enter to close... "
+read _x || true
+exit 0

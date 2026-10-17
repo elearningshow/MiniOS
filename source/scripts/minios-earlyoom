@@ -1,0 +1,21 @@
+#!/bin/sh
+# BROWSER-AP-01 v2.0: start earlyoom AFTER the desktop is up.
+# Static i686 binary. Never runs during boot / X start.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+BIN=/opt/minios/earlyoom
+LOG=/tmp/minios-earlyoom.log
+[ -x "$BIN" ] || exit 0
+pgrep -x earlyoom >/dev/null 2>&1 && exit 0
+
+i=0
+while [ ! -e /tmp/.X11-unix/X0 ] && [ "$i" -lt 60 ]; do
+  sleep 1
+  i=$((i + 1))
+done
+sleep 10
+
+echo "earlyoom start $(date)" >>"$LOG"
+exec "$BIN" -m 15,5 -s 10,5 \
+  --prefer 'falkon|firefox|QtWebEngine|gecko|chrome' \
+  --avoid 'X|Xvesa|flwm|wbar|aterm|xterm|earlyoom' \
+  -r 60 >>"$LOG" 2>&1

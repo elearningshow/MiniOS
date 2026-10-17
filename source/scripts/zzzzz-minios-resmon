@@ -1,0 +1,17 @@
+#!/bin/sh
+# Start the CPU/RAM line after the desktop is up.
+export DISPLAY="${DISPLAY:-:0}"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+i=0
+while [ "$i" -lt 15 ]; do
+  [ -e /tmp/.X11-unix/X0 ] && break
+  i=$((i + 1))
+  sleep 1
+done
+if [ -x /opt/minios/minios-resmon ]; then
+  if ! pgrep -x minios-rsmon >/dev/null 2>&1; then
+    rm -f /tmp/minios-resmon.lock
+    /opt/minios/minios-resmon >/tmp/minios-resmon-start.log 2>&1 &
+  fi
+fi
+true

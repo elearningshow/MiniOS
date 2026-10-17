@@ -1,0 +1,53 @@
+#!/bin/sh
+# SWAP-TUNE-AP-01: zram first (pri 100), disk last (pri 1).
+# vm.page-cluster=0  vm.swappiness=60
+# Never swapon from bootlocal. Call after Create Swap or post-GUI activate.
+# change_id SWT-01 SWT-02 SWT-03
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-swap-tune.log
+SYSCTL=/opt/minios/swap-sysctl.conf
+
+{
+  echo "minios-swap-tune $(date)"
+  mkdir -p /opt/minios
+  cat >"$SYSCTL" <<'EOF'
+vm.page-cluster=0
+vm.swappiness=60
+EOF
+  if [ -w /proc/sys/vm/page-cluster ]; then
+    echo 0 > /proc/sys/vm/page-cluster
+  fi
+  if [ -w /proc/sys/vm/swappiness ]; then
+    echo 60 > /proc/sys/vm/swappiness
+  fi
+  if command -v sysctl >/dev/null 2>&1; then
+    sysctl -w vm.page-cluster=0 >/dev/null 2>&1 || true
+    sysctl -w vm.swappiness=60 >/dev/null 2>&1 || true
+  fi
+
+  # Re-swapon with locked priorities. zram 100, every disk file 1.
+  # Filename Type Size Used Priority
+  awk 'NR>1 { print $1, $5 }' /proc/swaps 2>/dev/null | while read -r name pri; do
+    [ -n "$name" ] || continue
+    case "$name" in
+      *zram*)
+        [ "$pri" = 100 ] && continue
+        swapoff "$name" 2>/dev/null || true
+        swapon -p 100 "$name" 2>/dev/null || swapon "$name" 2>/dev/null || true
+        ;;
+      *)
+        [ "$pri" = 1 ] && continue
+        swapoff "$name" 2>/dev/null || true
+        swapon -p 1 "$name" 2>/dev/null || swapon "$name" 2>/dev/null || true
+        ;;
+    esac
+  done
+
+  echo "----- /proc/swaps -----"
+  cat /proc/swaps 2>/dev/null || true
+  echo -n "page-cluster="
+  cat /proc/sys/vm/page-cluster 2>/dev/null || echo "?"
+  echo -n "swappiness="
+  cat /proc/sys/vm/swappiness 2>/dev/null || echo "?"
+} >>"$LOG" 2>&1
+exit 0

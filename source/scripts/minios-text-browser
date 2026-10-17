@@ -1,0 +1,59 @@
+#!/bin/sh
+# One window: text-mode links. Do not open a second terminal or links -g.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export HOME="${HOME:-/home/tc}"
+export TERM="${TERM:-linux}"
+URL="${1:-https://lite.duckduckgo.com/lite/}"
+LOG=/tmp/minios-text-browser.log
+
+find_links() {
+  if command -v links >/dev/null 2>&1; then
+    command -v links
+    return 0
+  fi
+  if [ -x /opt/minios/minios-load-tcz ]; then
+    /opt/minios/minios-load-tcz links >>"$LOG" 2>&1 || true
+  elif [ -x /usr/local/bin/minios-load-tcz ]; then
+    /usr/local/bin/minios-load-tcz links >>"$LOG" 2>&1 || true
+  fi
+  if command -v links >/dev/null 2>&1; then
+    command -v links
+    return 0
+  fi
+  return 1
+}
+
+run_text_links() {
+  : >/tmp/minios-tb.ready
+  unset DISPLAY
+  unset XAUTHORITY
+  BIN=$(find_links) || {
+    echo "Text Browser: links is not installed."
+    echo -n "Press Enter... "
+    read _ || true
+    exit 1
+  }
+  exec "$BIN" "$URL"
+}
+
+# Already inside the one aterm this script started.
+if [ -n "${MINIOS_TB_INNER:-}" ]; then
+  run_text_links
+fi
+
+# The menu may already have opened a terminal. Stay in it.
+if [ -t 0 ] && [ -t 1 ]; then
+  run_text_links
+fi
+
+SELF=$0
+case "$SELF" in
+  /*) ;;
+  *) SELF=$(command -v "$SELF" 2>/dev/null || echo "$SELF") ;;
+esac
+if command -v aterm >/dev/null 2>&1; then
+  export MINIOS_TB_INNER=1
+  exec aterm +tr +sb -bg black -fg white -T "MiniOS Text Browser" \
+    -geometry 80x24+20+20 -e "$SELF" "$URL"
+fi
+run_text_links

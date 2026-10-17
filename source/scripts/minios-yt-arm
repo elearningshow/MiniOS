@@ -1,0 +1,478 @@
+#!/bin/sh
+# YouTube search clicked a video. Source type is YouTube.
+# The playlist button works because the player calls start_pl_item,
+# which runs minios-shorts-play, then video, audio, and captions.
+# A search click was only opening the window. This asks the player to
+# start that same function, and starts the download itself if the
+# player did not.
+# Do not call TikTok programs or write TikTok temp files.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-mplayer.log
+PL=/tmp/minios-yt-playlist
+echo "yt-arm-v218 $(date -u)" >>"$LOG"
+
+# Words for the picture plus the sound plus captions.
+yt_clock_words() {
+  yt_w_sec=$1
+  [ -n "$yt_w_sec" ] || yt_w_sec=1
+  [ "$yt_w_sec" -lt 1 ] && yt_w_sec=1
+  [ "$yt_w_sec" -gt 356400 ] && yt_w_sec=356400
+  yt_w_h=$((yt_w_sec / 3600))
+  yt_w_m=$(((yt_w_sec % 3600) / 60))
+  yt_w_s=$((yt_w_sec % 60))
+  yt_w_n=0
+  yt_w_a=""
+  yt_w_b=""
+  yt_w_c=""
+  if [ "$yt_w_h" -eq 1 ]; then
+    yt_w_a="1 hour"
+    yt_w_n=1
+  elif [ "$yt_w_h" -gt 1 ]; then
+    yt_w_a="$yt_w_h hours"
+    yt_w_n=1
+  fi
+  if [ "$yt_w_m" -eq 1 ]; then
+    yt_w_n=$((yt_w_n + 1))
+    if [ "$yt_w_n" -eq 1 ]; then yt_w_a="1 minute"; else yt_w_b="1 minute"; fi
+  elif [ "$yt_w_m" -gt 1 ]; then
+    yt_w_n=$((yt_w_n + 1))
+    if [ "$yt_w_n" -eq 1 ]; then yt_w_a="$yt_w_m minutes"; else yt_w_b="$yt_w_m minutes"; fi
+  fi
+  if [ "$yt_w_h" -eq 0 ] && [ "$yt_w_m" -eq 0 ]; then
+    if [ "$yt_w_s" -eq 1 ]; then printf '%s\n' "1 second"; else printf '%s\n' "$yt_w_s seconds"; fi
+    return
+  fi
+  if [ "$yt_w_s" -eq 1 ]; then
+    yt_w_n=$((yt_w_n + 1))
+    if [ "$yt_w_n" -eq 2 ]; then yt_w_b="1 second"; else yt_w_c="1 second"; fi
+  elif [ "$yt_w_s" -gt 0 ]; then
+    yt_w_n=$((yt_w_n + 1))
+    if [ "$yt_w_n" -eq 2 ]; then yt_w_b="$yt_w_s seconds"; else yt_w_c="$yt_w_s seconds"; fi
+  fi
+  if [ "$yt_w_n" -le 1 ]; then
+    printf '%s\n' "$yt_w_a"
+  elif [ "$yt_w_n" -eq 2 ]; then
+    printf '%s and %s\n' "$yt_w_a" "$yt_w_b"
+  else
+    printf '%s, %s and %s\n' "$yt_w_a" "$yt_w_b" "$yt_w_c"
+  fi
+}
+
+# Paint the summed time before any package load. 180 seconds is the guess
+# when the row has no length. Captions are a small extra file.
+yt_paint_first_clock() {
+  yt_idx=$(sed -n '1p' "$PL" 2>/dev/null | tr -cd '0-9')
+  [ -n "$yt_idx" ] || yt_idx=0
+  yt_tab=$(printf '\t')
+  yt_row=$(sed -n "$((yt_idx + 2))p" "$PL" 2>/dev/null || true)
+  yt_rest=${yt_row#*"$yt_tab"}
+  yt_title=${yt_rest%%"$yt_tab"*}
+  yt_dur=${yt_rest#*"$yt_tab"}
+  yt_dur=$(printf '%s' "$yt_dur" | tr -cd '0-9')
+  [ -n "$yt_dur" ] && [ "$yt_dur" -ge 1 ] || yt_dur=180
+  [ "$yt_dur" -le 14400 ] || yt_dur=14400
+  yt_video=$((50000 * yt_dur))
+  yt_audio=$((16000 * yt_dur))
+  yt_cap=40000
+  if [ -f /tmp/minios-yt-shorts ]; then
+    yt_cap=0
+  fi
+  yt_total=$((yt_video + yt_audio + yt_cap))
+  yt_bps=$(tr -cd '0-9' </tmp/minios-dl.bps 2>/dev/null || true)
+  [ -n "$yt_bps" ] && [ "$yt_bps" -ge 8000 ] || yt_bps=200000
+  yt_sec=$((yt_total / yt_bps))
+  [ "$yt_sec" -ge 1 ] || yt_sec=1
+  yt_phrase=$(yt_clock_words "$yt_sec")
+  yt_title=$(printf '%s' "$yt_title" | tr '\r\n"' "  '")
+  yt_extra=""
+  if [ -n "$yt_title" ]; then
+    yt_extra=" · $yt_title"
+  fi
+  YT_LINE=$(printf '%.46s' "$yt_phrase$yt_extra")
+  printf '%s\n' "$YT_LINE" >/tmp/minios-dl.line
+  printf '0\n%s\n' "$YT_LINE" >/tmp/minios-dl.progress
+}
+
+# The first line is the summed download time. The player deletes that line
+# on open when no downloader pid is alive. A live pid keeps it, and this
+# loop puts the same time line back if the player clears it. A later line
+# from the downloader ends the loop.
+rm -f /tmp/minios-dl.eta
+keep_id=$$
+echo "$keep_id" >/tmp/minios-dl.keeper
+yt_paint_first_clock
+echo $$ >/tmp/minios-dl.pid
+# Paint the desktop picture again. The download line must not replace it.
+if [ -x /opt/minios/setbg.sh ]; then
+  DISPLAY="${DISPLAY:-:0}" /opt/minios/setbg.sh >/dev/null 2>&1 || true
+fi
+(
+  n=0
+  while [ "$n" -lt 300 ]; do
+    cur=$(cat /tmp/minios-dl.keeper 2>/dev/null || true)
+    [ "$cur" = "$keep_id" ] || exit 0
+    lab=$(sed -n '2p' /tmp/minios-dl.progress 2>/dev/null || true)
+    saved=$(sed -n '1p' /tmp/minios-dl.line 2>/dev/null || true)
+    case "$lab" in
+      ""|"Loading media"|"Downloading video"|"Estimating download time")
+        if [ -n "$saved" ]; then
+          printf '0\n%s\n' "$saved" >/tmp/minios-dl.progress
+        fi
+        ;;
+      *)
+        if [ -n "$saved" ] && [ "$lab" = "$saved" ]; then
+          :
+        else
+          exit 0
+        fi
+        ;;
+    esac
+    n=$((n + 1))
+    sleep 0.1
+  done
+) >/dev/null 2>&1 &
+
+printf '%s\n' youtube >/tmp/minios-player-mode
+printf '%s\n' YouTube >/tmp/minios-media-source
+rm -f /tmp/minios-mp.fail /tmp/minios-mp.quit /tmp/minios-yt-resolve.cache \
+      /tmp/minios-mp.done
+# The player extensions have to be mounted before the first search click.
+# The playlist button works later because those packages are already in.
+if [ -x /opt/minios/minios-load-tcz ]; then
+  /opt/minios/minios-load-tcz python3.9 >>"$LOG" 2>&1 || true
+fi
+
+# Stop only the YouTube picture, via its own control pipe.
+# Do not pkill mplayer. That also stops TikTok and music.
+if [ -p /tmp/minios-mp.cmd ]; then
+  ( echo quit >/tmp/minios-mp.cmd ) >>"$LOG" 2>&1 &
+  qpid=$!
+  sleep 0.2
+  kill "$qpid" 2>/dev/null || true
+fi
+rm -f /tmp/minios-mp.done
+
+pid_alive() {
+  p="$1"
+  case "$p" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$p" -gt 1 ] && kill -0 "$p" 2>/dev/null
+}
+
+# True when THIS video's YouTube downloader is already running.
+# A shell script's process name is sh, so match the command line.
+# Skip this script. A TikTok yt-dlp, or an older YouTube download,
+# must not count: the search click would open the player and return.
+dl_busy() {
+  for d in /proc/[0-9]*; do
+    pid=${d#/proc/}
+    [ "$pid" = "$$" ] && continue
+    line=$(tr '\0' ' ' <"$d/cmdline" 2>/dev/null || true)
+    case "$line" in
+      *minios-yt-arm*|*tiktok.com*) continue ;;
+    esac
+    case "$line" in
+      *minios-shorts-play*|*minios-yt-resolve*|*yt-dlp-2026*)
+        if [ -z "$vid" ]; then
+          case "$line" in
+            *minios-shorts-play*|*minios-yt-resolve*) return 0 ;;
+          esac
+          continue
+        fi
+        case "$line" in
+          *"$vid"*) return 0 ;;
+        esac
+        ;;
+    esac
+  done
+  return 1
+}
+
+# Drop a YouTube downloader that is not this video. Leave TikTok alone.
+stop_other_dl() {
+  for d in /proc/[0-9]*; do
+    pid=${d#/proc/}
+    [ "$pid" = "$$" ] && continue
+    line=$(tr '\0' ' ' <"$d/cmdline" 2>/dev/null || true)
+    case "$line" in
+      *minios-yt-arm*|*tiktok.com*) continue ;;
+      *minios-shorts-play*|*minios-yt-resolve*|*yt-dlp-2026*)
+        if [ -n "$vid" ]; then
+          case "$line" in
+            *"$vid"*) continue ;;
+          esac
+        fi
+        kill "$pid" 2>/dev/null || true
+        ;;
+    esac
+  done
+}
+
+bar_pid() {
+  cat /tmp/minios-player-bar.pid 2>/dev/null || echo 0
+}
+
+# First painted line: picture + sound + captions, and the video name.
+yt_arm_announce() {
+  py=/usr/local/bin/python3.9
+  if [ ! -x "$py" ]; then
+    py=python3
+  fi
+  command -v "$py" >/dev/null 2>&1 || return 0
+  "$py" - "$PL" >>"$LOG" 2>&1 <<'PY' || true
+import os
+import sys
+
+def clock_phrase(sec):
+    if sec < 1:
+        sec = 1
+    if sec > 356400:
+        sec = 356400
+    h = sec // 3600
+    m = (sec % 3600) // 60
+    s = sec % 60
+    words = []
+    if h == 1:
+        words.append("1 hour")
+    elif h > 1:
+        words.append("%d hours" % h)
+    if m == 1:
+        words.append("1 minute")
+    elif m > 1:
+        words.append("%d minutes" % m)
+    if h == 0 and m == 0:
+        if s == 1:
+            words.append("1 second")
+        else:
+            words.append("%d seconds" % s)
+    elif s == 1:
+        words.append("1 second")
+    elif s > 0:
+        words.append("%d seconds" % s)
+    if len(words) == 1:
+        return words[0]
+    if len(words) == 2:
+        return "%s and %s" % (words[0], words[1])
+    return "%s, %s and %s" % (words[0], words[1], words[2])
+
+try:
+    lines = open(sys.argv[1]).read().splitlines()
+except Exception:
+    raise SystemExit(0)
+idx = 0
+try:
+    idx = int((lines[0] if lines else "0").strip() or "0")
+except Exception:
+    idx = 0
+row = lines[idx + 1] if len(lines) > idx + 1 else ""
+parts = row.split("\t")
+title = parts[1].strip() if len(parts) > 1 else ""
+title = title.replace('"', "'")
+try:
+    dur = int(float(parts[2])) if len(parts) > 2 and parts[2] else 0
+except Exception:
+    dur = 0
+if dur < 1:
+    dur = 180
+video = 50000 * dur
+audio = 16000 * dur
+cap = 0 if os.path.exists("/tmp/minios-yt-shorts") else 40000
+try:
+    speed = float(open("/tmp/minios-dl.bps").read().strip())
+except Exception:
+    speed = 200000.0
+if speed < 8000:
+    speed = 200000.0
+sec = int((video + audio + cap) / speed)
+if sec < 1:
+    sec = 1
+phrase = clock_phrase(sec)
+extra = (" · " + title) if title else ""
+room = 46 - len(phrase)
+if extra and room >= 5:
+    if len(extra) > room:
+        extra = extra[:room]
+    shown = phrase + extra
+else:
+    shown = phrase
+if len(shown) > 46:
+    shown = shown[:46]
+open("/tmp/minios-dl.line", "w").write(shown + "\n")
+tmp = "/tmp/minios-dl.progress.tmp"
+open(tmp, "w").write("0\n%s\n" % shown)
+os.rename(tmp, "/tmp/minios-dl.progress")
+open("/tmp/minios-dl.eta", "a").close()
+if not title:
+    title = "Selected video"
+if len(title) > 80:
+    title = title[:80]
+try:
+    import ctypes
+    x11 = ctypes.CDLL("libX11.so.6")
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    dpy = x11.XOpenDisplay(None)
+    if not dpy:
+        raise SystemExit(0)
+    x11.XDefaultRootWindow.restype = ctypes.c_ulong
+    x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+    x11.XQueryTree.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong,
+        ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
+        ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)), ctypes.POINTER(ctypes.c_uint),
+    ]
+    x11.XQueryTree.restype = ctypes.c_int
+    x11.XFetchName.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_char_p)]
+    x11.XFetchName.restype = ctypes.c_int
+    x11.XStoreName.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_char_p]
+    x11.XFree.argtypes = [ctypes.c_void_p]
+    x11.XFlush.argtypes = [ctypes.c_void_p]
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    names = ("MiniOS Media Player", "MiniOS YouTube")
+
+    def phrase_for(cur):
+        for base in names:
+            if cur == base or cur.startswith(base + " - Now playing"):
+                return '%s - Now playing "%s"' % (base, title)
+        return None
+
+    def visit(win, depth):
+        if depth > 6:
+            return
+        got = ctypes.c_char_p()
+        if x11.XFetchName(dpy, win, ctypes.byref(got)) and got.value:
+            cur = got.value.decode("utf-8", "replace")
+            x11.XFree(got)
+            new = phrase_for(cur)
+            if new:
+                x11.XStoreName(dpy, win, new.encode("utf-8", "replace"))
+        root_r = ctypes.c_ulong()
+        parent = ctypes.c_ulong()
+        kids = ctypes.POINTER(ctypes.c_ulong)()
+        nk = ctypes.c_uint()
+        if not x11.XQueryTree(dpy, win, ctypes.byref(root_r), ctypes.byref(parent), ctypes.byref(kids), ctypes.byref(nk)):
+            return
+        n = int(nk.value)
+        for i in range(n):
+            visit(kids[i], depth + 1)
+        if n and kids:
+            x11.XFree(kids)
+
+    visit(x11.XDefaultRootWindow(dpy), 0)
+    x11.XFlush(dpy)
+    x11.XCloseDisplay(dpy)
+except Exception:
+    pass
+PY
+}
+
+was_up=0
+pid_alive "$(bar_pid)" && was_up=1
+
+idx=$(head -n 1 "$PL" 2>/dev/null | tr -cd '0-9')
+[ -n "$idx" ] || idx=0
+# First field is the URL. The shell splits on a real tab.
+# The playlist row uses that same URL.
+tab=$(printf '\t')
+line=$(sed -n "$((idx + 2))p" "$PL" 2>/dev/null || true)
+url=${line%%"$tab"*}
+vid=
+case "$url" in
+  *'v='*)
+    rest=${url#*v=}
+    vid=$(printf '%.11s' "$rest")
+    ;;
+  *youtu.be/*)
+    rest=${url#*youtu.be/}
+    vid=$(printf '%.11s' "$rest")
+    ;;
+  *'/shorts/'*)
+    rest=${url#*/shorts/}
+    vid=$(printf '%.11s' "$rest")
+    ;;
+esac
+case "$vid" in
+  *[!A-Za-z0-9_-]*) vid= ;;
+esac
+[ "${#vid}" -eq 11 ] || vid=
+yt_arm_announce
+if [ -x /opt/minios/minios-load-tcz ]; then
+  /opt/minios/minios-load-tcz ffmpeg4 >>"$LOG" 2>&1 || true
+  /opt/minios/minios-load-tcz mplayer-cli >>"$LOG" 2>&1 || true
+fi
+# The playlist button calls start_pl_item inside the player. That forks
+# minios-shorts-play. A search click has to end on that same program.
+BAR=/opt/minios/minios-player-bar
+[ -x "$BAR" ] || BAR=/usr/local/bin/minios-player-bar
+if [ "$was_up" -eq 0 ]; then
+  if [ ! -x "$BAR" ]; then
+    echo "yt-arm player missing" >>"$LOG"
+    exit 1
+  fi
+  echo "yt-arm start player idx=$idx" >>"$LOG"
+  rm -f /tmp/minios-mp.reload
+  "$BAR" --youtube >>"$LOG" 2>&1 &
+else
+  echo "yt-arm reload idx=$idx url=$url" >>"$LOG"
+  if pgrep -x mplayer >/dev/null 2>&1; then
+    if [ -p /tmp/minios-mp.cmd ]; then
+      echo quit >/tmp/minios-mp.cmd 2>/dev/null || true
+    fi
+    pkill -x mplayer >/dev/null 2>&1 || true
+  fi
+  printf '%s\n' 1 >/tmp/minios-mp.reload
+fi
+# Keep a live downloader pid so the open player paints the line
+# on its next refresh instead of staying on a blank screen.
+dp=$(cat /tmp/minios-dl.pid 2>/dev/null || true)
+pid_alive "$dp" || echo $$ >/tmp/minios-dl.pid
+# The player may call start_pl_item while it opens. That call stops any
+# downloader it did not start. Wait for that moment. If this video's
+# downloader is still absent, start minios-shorts-play, which is what
+# the playlist row runs. One follow-up covers the player stopping the
+# first copy and not replacing it.
+n=0
+while [ "$n" -lt 20 ]; do
+  if pid_alive "$(bar_pid)"; then
+    # The player has cleared the line. Put the time line back.
+    lab=$(sed -n '2p' /tmp/minios-dl.progress 2>/dev/null || true)
+    case "$lab" in
+      ""|"Loading media"|"Downloading video")
+        saved=$(sed -n '1p' /tmp/minios-dl.line 2>/dev/null || true)
+        if [ -n "$saved" ]; then
+          printf '0\n%s\n' "$saved" >/tmp/minios-dl.progress
+        fi
+        ;;
+    esac
+    break
+  fi
+  n=$((n + 1))
+  sleep 0.15
+done
+n=0
+while [ "$n" -lt 12 ]; do
+  if dl_busy; then
+    echo "yt-arm player started download vid=$vid" >>"$LOG"
+    exit 0
+  fi
+  n=$((n + 1))
+  sleep 0.25
+done
+if [ -z "$url" ]; then
+  echo "yt-arm no url" >>"$LOG"
+  exit 1
+fi
+SP=/opt/minios/minios-shorts-play
+[ -x "$SP" ] || SP=/usr/local/bin/minios-shorts-play
+stop_other_dl
+echo "yt-arm same as playlist $url" >>"$LOG"
+"$SP" "$url" >>"$LOG" 2>&1 &
+sleep 1
+if dl_busy; then
+  echo "yt-arm download stayed vid=$vid" >>"$LOG"
+  exit 0
+fi
+echo "yt-arm player stopped the download, starting it again" >>"$LOG"
+stop_other_dl
+"$SP" "$url" >>"$LOG" 2>&1 &
+exit 0

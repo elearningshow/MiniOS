@@ -1,0 +1,337 @@
+#!/bin/sh
+# Mount the full mplayer dependency tree (recursive .dep walk) and bring up
+# ATI IXP AC97 audio. onboot.lst does not follow .dep files.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-sound.log
+if [ "$(id -u)" -ne 0 ]; then
+  if command -v sudo >/dev/null 2>&1; then
+    exec sudo -n "$0" "$@"
+  fi
+  echo "minios-sound-up: need root" >>"$LOG"
+  exit 1
+fi
+KVER=$(uname -r)
+{
+  echo "===== minios-sound-up $(date -u) ====="
+  echo "kver=$KVER argv=$*"
+} >>"$LOG"
+
+SEEN=/tmp/minios-tcz-seen
+mkdir -p "$SEEN"
+
+mount_tcz() {
+  name="$1"
+  name="${name%.tcz}"
+  [ -n "$name" ] || return 0
+  if mountpoint -q "/tmp/tcloop/$name" 2>/dev/null; then
+    return 0
+  fi
+  for opt in /mnt/*/cde/optional /mnt/*/tce/optional /cde/optional; do
+    [ -f "$opt/$name.tcz" ] || continue
+    mkdir -p "/tmp/tcloop/$name"
+    if mount -o loop,ro "$opt/$name.tcz" "/tmp/tcloop/$name" >>"$LOG" 2>&1; then
+      echo "mounted $name" >>"$LOG"
+      return 0
+    fi
+  done
+  echo "mount failed $name" >>"$LOG"
+  return 1
+}
+
+mount_tree() {
+  n="${1%.tcz}"
+  [ -n "$n" ] || return 0
+  [ -f "$SEEN/$n" ] && return 0
+  : >"$SEEN/$n"
+  mount_tcz "$n" || true
+  # Runtime lib is foo.tcz; foo-dev.tcz is headers only (v0.2.38 mounted xvid-dev, missed libxvidcore).
+  case "$n" in
+    *-dev)
+      mount_tcz "${n%-dev}" || true
+      ;;
+  esac
+  for opt in /mnt/*/cde/optional /mnt/*/tce/optional /cde/optional; do
+    [ -f "$opt/$n.tcz.dep" ] || continue
+    while read -r pkg; do
+      case "$pkg" in ""|\#*) continue ;; esac
+      mount_tree "$pkg"
+    done <"$opt/$n.tcz.dep"
+    break
+  done
+}
+
+# Full tree. libcdio is a child of libcdio-paranoia (v0.2.37 miss).
+for n in mplayer-cli ffmpeg4 libasound alsa alsa-config "alsa-modules-$KVER" \
+         libcdio libcdio-paranoia libmng lcms2 SDL libXxf86vm mesa \
+         xvid libEGL; do
+  mount_tree "$n"
+done
+
+# Boot chime uses the tcloop mplayer path. Do not plant /usr/local/lib
+# links — after umount those become dangling and feh cannot set the wallpaper.
+if [ "${1:-}" != "boot-chime" ]; then
+  for so in /tmp/tcloop/*/usr/local/lib/lib*.so /tmp/tcloop/*/usr/local/lib/lib*.so.*; do
+    [ -e "$so" ] || continue
+    base=$(basename "$so")
+    [ -e "/usr/local/lib/$base" ] && continue
+    ln -sfn "$so" "/usr/local/lib/$base"
+  done
+  if command -v ldconfig >/dev/null 2>&1; then
+    ldconfig >/dev/null 2>&1 || true
+  fi
+fi
+
+unload_boot_chime() {
+  echo "----- boot-chime unload -----" >>"$LOG"
+  pkill -9 -f /tmp/tcloop/mplayer-cli/usr/local/bin/mplayer >/dev/null 2>&1 || true
+  pkill -9 -x mplayer >/dev/null 2>&1 || true
+  sleep 0.2
+  if [ -L /usr/local/bin/mplayer ]; then
+    tgt=$(readlink /usr/local/bin/mplayer 2>/dev/null || true)
+    case "$tgt" in
+      /tmp/tcloop/*) rm -f /usr/local/bin/mplayer ;;
+    esac
+  fi
+  # Only the chime player binary. Do not umount libmng/lcms2/mesa —
+  # feh needs those to set the wallpaper (v0.2.101 never unmounted them).
+  for n in mplayer-cli; do
+    if mountpoint -q "/tmp/tcloop/$n" 2>/dev/null; then
+      umount "/tmp/tcloop/$n" >>"$LOG" 2>&1 || \
+        umount -l "/tmp/tcloop/$n" >>"$LOG" 2>&1 || true
+      echo "umount play $n" >>"$LOG"
+    fi
+  done
+  rm -rf "$SEEN"
+  echo "boot-chime player tree unmounted" >>"$LOG"
+}
+
+# Fast path for play: skip depmod/amixer.
+if [ "${1:-}" = "libs-only" ]; then
+  {
+    echo "libs-only libcdio=$(ls /tmp/tcloop/libcdio/usr/local/lib/libcdio.so* 2>/dev/null)"
+    echo "libs-only xvid=$(ls /tmp/tcloop/xvid/usr/local/lib/libxvidcore.so* 2>/dev/null)"
+    echo "libs-only egl=$(ls /tmp/tcloop/libEGL/usr/local/lib/libEGL.so* 2>/dev/null)"
+    echo "libs-only libmng=$(ls /tmp/tcloop/libmng/usr/local/lib/libmng.so* 2>/dev/null)"
+    echo "libs-only ffmpeg=$(ls /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg 2>/dev/null)"
+    if [ -x /tmp/tcloop/mplayer-cli/usr/local/bin/mplayer ] && command -v ldd >/dev/null 2>&1; then
+      echo "----- ldd mplayer -----"
+      LD_LIBRARY_PATH="/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        ldd /tmp/tcloop/mplayer-cli/usr/local/bin/mplayer 2>&1 | grep -i "not found" || echo "ldd_ok no missing"
+    fi
+  } >>"$LOG"
+  exit 0
+fi
+
+for d in /tmp/tcloop/*/usr/local/bin; do
+  [ -d "$d" ] || continue
+  PATH="$d:$PATH"
+done
+for d in /tmp/tcloop/*/usr/local/lib; do
+  [ -d "$d" ] || continue
+  LD_LIBRARY_PATH="$d${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+done
+export PATH LD_LIBRARY_PATH
+
+if [ -x /tmp/tcloop/mplayer-cli/usr/local/bin/mplayer ]; then
+  if [ -f /usr/local/bin/mplayer ] && head -1 /usr/local/bin/mplayer 2>/dev/null | grep -q '^#!'; then
+    rm -f /usr/local/bin/mplayer
+  fi
+  ln -sfn /tmp/tcloop/mplayer-cli/usr/local/bin/mplayer /usr/local/bin/mplayer
+fi
+
+# ALSA: v0.2.38/39 failed because
+#   1) depmod wrote to the read-only tcz loop
+#   2) BusyBox modprobe has no -d
+#   3) snd.ko depends on soundcore — that module was never loaded
+# Load order from .modinfo: soundcore -> snd -> snd-timer -> snd-pcm, then
+# the card module that matches this machine (ATI IXP, ICH, VIA, HDA, ...).
+ALSA_ROOT="/tmp/tcloop/alsa-modules-$KVER/usr/local"
+ALSA_MODDIR="$ALSA_ROOT/lib/modules/$KVER"
+AUD=/tmp/minios-audio.txt
+KMOD=/tmp/minios-kmod
+mkdir -p "$KMOD"
+{
+  echo "kver=$KVER"
+  echo "alsa_root=$ALSA_ROOT"
+  echo "soundcore_ko=$(find "$ALSA_MODDIR" -name 'soundcore.ko*' 2>/dev/null | head -1)"
+  echo "atiixp_ko=$(find "$ALSA_MODDIR" -name 'snd-atiixp.ko*' 2>/dev/null | grep -v modem | head -1)"
+} >"$AUD"
+
+mod_loaded() {
+  n="$1"
+  n="${n//-/_}"
+  grep -q "^${n} " /proc/modules 2>/dev/null
+}
+
+load_ko() {
+  name="$1"
+  if mod_loaded "$name"; then
+    echo "already $name" >>"$LOG"
+    return 0
+  fi
+  ko=$(find "$ALSA_MODDIR" \( -name "${name}.ko.gz" -o -name "${name}.ko" \) 2>/dev/null | grep -v modem | head -1)
+  if [ -z "$ko" ]; then
+    echo "no ko $name" >>"$LOG"
+    return 1
+  fi
+  if insmod "$ko" >>"$LOG" 2>&1; then
+    echo "insmod $name ok $ko" >>"$LOG"
+    return 0
+  fi
+  raw="$KMOD/${name}.ko"
+  if gzip -dc "$ko" >"$raw" 2>/dev/null || cp -f "$ko" "$raw" 2>/dev/null; then
+    if insmod "$raw" >>"$LOG" 2>&1; then
+      echo "insmod $name ok unzipped $raw" >>"$LOG"
+      return 0
+    fi
+  fi
+  echo "load $name fail $ko" >>"$LOG"
+  return 1
+}
+
+if [ -d "$ALSA_MODDIR" ]; then
+  echo "----- load soundcore then this machine's card -----" >>"$LOG"
+  load_ok=1
+  for m in soundcore snd snd-timer snd-pcm ac97_bus snd-ac97-codec \
+           snd-mixer-oss snd-pcm-oss; do
+    if ! load_ko "$m"; then
+      case "$m" in
+        snd-mixer-oss|snd-pcm-oss) ;;
+        *) load_ok=0 ;;
+      esac
+    fi
+  done
+  hint=$(lspci 2>/dev/null | grep -iE 'audio|multimedia|ac97|sound' | tr 'A-Z' 'a-z')
+  echo "audio_hint=$hint" >>"$LOG"
+  try=""
+  echo "$hint" | grep -q 'ati\|ixp\|sb400\|sb450\|sb600' && try="$try snd-atiixp"
+  echo "$hint" | grep -q 'via\|vt82' && try="$try snd-via82xx"
+  echo "$hint" | grep -q 'intel.*ich\|82801\|esb\|i8xx' && try="$try snd-intel8x0"
+  echo "$hint" | grep -q 'hda\|high definition' && try="$try snd-hda-intel"
+  echo "$hint" | grep -q 'sis' && try="$try snd-sis7019"
+  echo "$hint" | grep -q 'ensoniq\|es137' && try="$try snd-ens1371 snd-ens1370"
+  echo "$hint" | grep -q 'c-media\|cmpci' && try="$try snd-cmipci"
+  # Always walk the common set so a new laptop is not locked to ATI IXP.
+  tried=""
+  for m in $try snd-atiixp snd-intel8x0 snd-via82xx snd-hda-intel \
+           snd-sis7019 snd-cmipci snd-ens1371 snd-ens1370 snd-azt3328 snd-cs46xx; do
+    case " $tried " in *" $m "*) continue ;; esac
+    tried="$tried $m"
+    load_ko "$m" || true
+    if [ -e /dev/snd/pcmC0D0p ]; then
+      echo "card_module=$m" >>"$LOG"
+      break
+    fi
+  done
+  echo "----- /proc/modules snd -----" >>"$LOG"
+  grep -E 'snd|soundcore|ac97' /proc/modules >>"$LOG" 2>&1 || echo "no snd modules" >>"$LOG"
+  echo "load_ok=$load_ok" >>"$LOG"
+else
+  echo "alsa module tree missing" >>"$LOG"
+fi
+
+# Userspace ALSA looks at /usr/local/etc/alsa/alsa.conf (missing on v0.2.38).
+mkdir -p /usr/local/etc/alsa /usr/local/share/alsa /etc/udev/rules.d
+if [ ! -e /usr/local/etc/alsa/alsa.conf ]; then
+  for p in \
+    /tmp/tcloop/alsa/usr/local/etc/alsa/alsa.conf \
+    /usr/local/share/alsa/alsa.conf
+  do
+    if [ -f "$p" ]; then
+      ln -sfn "$p" /usr/local/etc/alsa/alsa.conf
+      echo "alsa.conf -> $p" >>"$LOG"
+      break
+    fi
+  done
+fi
+if [ ! -f /etc/udev/rules.d/90-alsa-restore.rules ]; then
+  for p in /tmp/tcloop/alsa/usr/local/share/alsa/files/90-alsa-restore.rules; do
+    [ -f "$p" ] && cp -f "$p" /etc/udev/rules.d/90-alsa-restore.rules && break
+  done
+fi
+
+if command -v udevadm >/dev/null 2>&1; then
+  udevadm trigger --subsystem-match=sound >>"$LOG" 2>&1 || true
+  udevadm settle --timeout=3 >>"$LOG" 2>&1 || true
+fi
+sleep 1
+
+if [ -x /tmp/tcloop/alsa/usr/local/tce.installed/alsa ]; then
+  /tmp/tcloop/alsa/usr/local/tce.installed/alsa >>"$LOG" 2>&1 || true
+fi
+
+# Unmute every simple playback control (ATI IXP AC97 names vary).
+if command -v amixer >/dev/null 2>&1; then
+  echo "----- amixer scontrols -----" >>"$LOG"
+  amixer scontrols >>"$LOG" 2>&1 || true
+  amixer scontrols 2>/dev/null | sed -n "s/.*'\\([^']*\\)'.*/\\1/p" | while read -r ctl; do
+    [ -n "$ctl" ] || continue
+    amixer -q sset "$ctl" unmute 80% >>"$LOG" 2>&1 || \
+      amixer -q sset "$ctl" 80% unmute >>"$LOG" 2>&1 || true
+  done
+fi
+if command -v alsactl >/dev/null 2>&1; then
+  alsactl init >>"$LOG" 2>&1 || true
+fi
+
+# mini-mini.mp3 is the boot chime only. YouTube / first play must not replay it.
+{
+  echo "----- confirm -----"
+  echo "pcm_play=$(ls /dev/snd/pcmC0D0p 2>&1)"
+  echo "card_line=$(cat /proc/asound/cards 2>/dev/null | head -1)"
+} >>"$AUD"
+if [ -e /dev/snd/pcmC0D0p ]; then
+  echo "SOUND_CARD_READY" >>"$LOG"
+  if [ "${1:-}" = "boot-chime" ] && [ ! -f /tmp/minios-tone.done ]; then
+    TONE=""
+    for t in /opt/minios/music/mini-mini.mp3 /usr/local/share/minios/music/mini-mini.mp3 \
+             /opt/minios/minios-tone.wav; do
+      [ -f "$t" ] && TONE="$t" && break
+    done
+    if [ -z "$TONE" ]; then
+      for d in /mnt/*/minios-music/mini-mini.mp3; do
+        [ -f "$d" ] && TONE="$d" && break
+      done
+    fi
+    MP=""
+    for a in /tmp/tcloop/mplayer-cli/usr/local/bin/mplayer /usr/local/bin/mplayer /usr/bin/mplayer; do
+      [ -x "$a" ] && MP="$a" && break
+    done
+    if [ -n "$TONE" ] && [ -n "$MP" ]; then
+      echo "boot_chime $MP $TONE" >>"$LOG"
+      "$MP" -novideo -really-quiet -ao alsa,oss,null -endpos 6 -- "$TONE" >>"$LOG" 2>&1 || \
+        echo "boot_chime fail" >>"$LOG"
+    else
+      echo "boot_chime skipped mplayer=$MP tone=$TONE" >>"$LOG"
+    fi
+    : > /tmp/minios-tone.done
+  else
+    echo "skip_chime argv=${1:-} done=$( [ -f /tmp/minios-tone.done ] && echo yes || echo no )" >>"$LOG"
+    : > /tmp/minios-tone.done
+  fi
+else
+  echo "SOUND_CARD_NOT_READY" >>"$LOG"
+fi
+
+{
+  echo "mplayer=$(command -v mplayer)"
+  echo "ffmpeg=$(command -v ffmpeg)"
+  echo "----- /dev/snd -----"
+  ls -l /dev/snd 2>&1 || true
+  echo "----- /proc/asound/cards -----"
+  cat /proc/asound/cards 2>&1 || true
+  echo "----- lspci audio -----"
+  lspci 2>/dev/null | grep -iE 'audio|multimedia|ac97|sound' || true
+} >>"$LOG"
+{
+  echo "----- result -----"
+  echo "chip=$(lspci 2>/dev/null | grep -iE 'audio|multimedia|ac97' | head -1)"
+  echo "module_wanted=$(grep '^card_module=' "$LOG" 2>/dev/null | tail -1 | sed 's/card_module=//')"
+  echo "snd=$(ls /dev/snd 2>&1 | tr '\n' ' ')"
+  echo "cards=$(cat /proc/asound/cards 2>/dev/null | tr '\n' ';')"
+} >>"$AUD"
+cat "$AUD" >>"$LOG"
+if [ "${1:-}" = "boot-chime" ]; then
+  unload_boot_chime
+fi
+exit 0

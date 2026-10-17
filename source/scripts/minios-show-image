@@ -1,0 +1,25 @@
+#!/bin/sh
+# BAKE-AP-01 v1.8 ISS-016: fetch one image file and show it with mplayer.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+URL="$1"
+if [ -z "$URL" ]; then
+  echo "usage: minios-show-image URL" >&2
+  exit 1
+fi
+OUT=/tmp/minios-one-image
+rm -f "$OUT"
+if command -v wget >/dev/null 2>&1; then
+  wget -q -O "$OUT" "$URL" || exit 1
+elif command -v curl >/dev/null 2>&1; then
+  curl -fsSL -o "$OUT" "$URL" || exit 1
+else
+  echo "minios-show-image: no wget/curl" >&2
+  exit 1
+fi
+# Reject HTML error pages
+if grep -qi '<html' "$OUT" 2>/dev/null; then
+  echo "minios-show-image: URL was not an image file" >&2
+  exit 1
+fi
+exec mplayer -vo xv -ao alsa -loop 0 "$OUT"

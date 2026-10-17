@@ -1,0 +1,74 @@
+#!/bin/sh
+# AP-06 photo report: GUI + wallpaper + wireless + home writable. No swap.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export HOME="${HOME:-/home/tc}"
+export DISPLAY="${DISPLAY:-:0}"
+LOG=/tmp/minios-check.log
+TITLE="MiniOS AP-06 baseline — photograph this window"
+VER=$(cat /opt/minios/VERSION 2>/dev/null || echo unknown)
+
+WP=FAIL
+grep -q SUCCESS /tmp/minios-poc-wallpaper.log 2>/dev/null && WP=PASS
+[ -f /tmp/minios-wallpaper.ok ] && WP=PASS
+
+GUI=FAIL
+pgrep flwm >/dev/null 2>&1 && GUI=PASS
+[ -e /tmp/.X11-unix/X0 ] || GUI=FAIL
+
+WLAN=FAIL
+iwconfig 2>/dev/null | grep -q . && WLAN=PASS
+ip link 2>/dev/null | grep -qiE ' wl|wlan' && WLAN=PASS
+
+HOMEOK=FAIL
+if [ -w /home/tc ] && mkdir -p /home/tc/.local /home/tc/.config 2>/dev/null; then
+  HOMEOK=PASS
+fi
+
+SWAP=NONE
+[ -s /proc/swaps ] && awk 'NR>1{found=1} END{exit !found}' /proc/swaps 2>/dev/null && SWAP=ACTIVE
+
+{
+  echo "===================================================="
+  echo "  Action plan: AP-06 — GUI + wallpaper + wireless"
+  echo "  version: $VER"
+  echo "  $(date 2>/dev/null)"
+  echo "===================================================="
+  echo
+  echo "SCOREBOARD"
+  echo "  desktop ........ $GUI"
+  echo "  wallpaper ...... $WP"
+  echo "  wireless ....... $WLAN"
+  echo "  /home/tc write . $HOMEOK"
+  echo "  swap at boot ... $SWAP   (must be NONE)"
+  echo
+  echo "----- home/tc -----"
+  ls -ld /home/tc 2>/dev/null
+  id
+  ls -ld /home/tc/.local /home/tc/.config 2>/dev/null || true
+  echo
+  echo "----- wireless -----"
+  iwconfig 2>/dev/null || echo "(no iwconfig output)"
+  echo "--- ip link ---"
+  ip link 2>/dev/null || ifconfig -a 2>/dev/null | head -20
+  echo
+  echo "----- firmware b43 -----"
+  ls /usr/local/lib/firmware/b43/ucode5.fw /lib/firmware/b43/ucode5.fw 2>/dev/null || echo "ucode5.fw not listed"
+  echo
+  echo "Photograph this window. Swap must stay NONE."
+  echo "===================================================="
+} >"$LOG" 2>&1
+
+for d in /mnt/*; do
+  [ -d "$d/cde/optional" ] && [ -w "$d" ] && cp -f "$LOG" "$d/AP-06-REPORT.txt" 2>/dev/null
+done
+
+if [ "${1:-}" = "--cli" ] || [ -z "${DISPLAY:-}" ]; then
+  cat "$LOG"
+  exit 0
+fi
+if command -v aterm >/dev/null 2>&1; then
+  aterm -title "$TITLE" -geometry 96x32 -e sh -c "cat '$LOG'; echo; echo Press Enter; read x"
+  exit 0
+fi
+cat "$LOG"
+exit 0

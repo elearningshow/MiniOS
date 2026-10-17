@@ -1,0 +1,5 @@
+#!/bin/sh
+# RR-01: only sync + drop page cache. Called via passwordless sudo.
+sync
+echo 1 > /proc/sys/vm/drop_caches
+exit 0

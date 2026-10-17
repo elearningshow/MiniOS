@@ -1,0 +1,19 @@
+#!/bin/sh
+# Open /tmp/minios-youtube.log. Called from minios-youtube-fail.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+LOG=/tmp/minios-youtube.log
+if [ ! -f "$LOG" ]; then
+  exec xmessage -center "Log not found: $LOG"
+fi
+if command -v aterm >/dev/null 2>&1; then
+  if command -v less >/dev/null 2>&1; then
+    exec aterm +tr +sb -bg black -fg white -T "YouTube log" -e less "$LOG"
+  fi
+  if command -v more >/dev/null 2>&1; then
+    exec aterm +tr +sb -bg black -fg white -T "YouTube log" -e more "$LOG"
+  fi
+  exec aterm +tr +sb -bg black -fg white -T "YouTube log" -e sh -c \
+    'cat /tmp/minios-youtube.log; echo; echo -n Press Enter...; read _'
+fi
+exit 0

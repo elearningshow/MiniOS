@@ -1,0 +1,109 @@
+#!/bin/sh
+# RESOURCE-MON-AP-01 / SWAP-TUNE-AP-01: CPU / RAM / ZRAM / disk SWAP.
+# Prefer the borderless X11 bar; fall back to a 1-line aterm.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+export HOME="${HOME:-/home/tc}"
+
+LOCK=/tmp/minios-resmon.lock
+MODE="${1:-}"
+
+read_cpu_sample() {
+  awk '/^cpu / { print $2+$3+$4+$5+$6+$7+$8+$9, $5+$6; exit }' /proc/stat
+}
+
+cpu_pct() {
+  s1=$(read_cpu_sample)
+  sleep 1
+  s2=$(read_cpu_sample)
+  t1=$(echo "$s1" | awk '{print $1}')
+  i1=$(echo "$s1" | awk '{print $2}')
+  t2=$(echo "$s2" | awk '{print $1}')
+  i2=$(echo "$s2" | awk '{print $2}')
+  dt=$((t2 - t1))
+  di=$((i2 - i1))
+  if [ "$dt" -le 0 ]; then
+    echo 0
+    return
+  fi
+  echo $(((100 * (dt - di)) / dt))
+}
+
+ram_pct() {
+  awk '
+    /^MemTotal:/ { t=$2 }
+    /^MemAvailable:/ { a=$2 }
+    /^MemFree:/ { f=$2 }
+    END {
+      if (t+0 <= 0) { print 0; exit }
+      if (a == "") a = f
+      if (a+0 < 0) a = 0
+      used = t - a
+      if (used < 0) used = 0
+      printf "%d", (used * 100) / t
+    }
+  ' /proc/meminfo
+}
+
+zram_line() {
+  awk 'NR>1 && $1 ~ /zram/ { s+=$3; u+=$4 }
+    END {
+      if (s+0 <= 0) { print "none"; exit }
+      printf "%d%%", (u * 100) / s
+    }
+  ' /proc/swaps
+}
+
+swap_line() {
+  awk 'NR>1 && $1 !~ /zram/ { s+=$3; u+=$4 }
+    END {
+      if (s+0 <= 0) { print "none"; exit }
+      printf "%d%%", (u * 100) / s
+    }
+  ' /proc/swaps
+}
+
+if [ "$MODE" = "loop" ]; then
+  while :; do
+    printf '\r'
+    cpu=$(cpu_pct)
+    ram=$(ram_pct)
+    zr=$(zram_line)
+    sw=$(swap_line)
+    printf ' CPU %s%%  RAM %s%%  ZRAM %s  SWAP %s  ' "$cpu" "$ram" "$zr" "$sw"
+  done
+fi
+
+if [ -f "$LOCK" ]; then
+  old=$(cat "$LOCK" 2>/dev/null)
+  if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
+    exit 0
+  fi
+  rm -f "$LOCK"
+fi
+
+i=0
+while [ "$i" -lt 20 ]; do
+  [ -e /tmp/.X11-unix/X0 ] && break
+  i=$((i + 1))
+  sleep 1
+done
+
+# Borderless X11 bar (hover close / minimize)
+if [ -x /opt/minios/minios-rsmon ]; then
+  echo $$ >"$LOCK"
+  /opt/minios/minios-rsmon >/tmp/minios-resmon.log 2>&1 &
+  echo $! >"$LOCK"
+  exit 0
+fi
+
+if ! command -v aterm >/dev/null 2>&1; then
+  exit 0
+fi
+
+echo $$ >"$LOCK"
+aterm +tr +sb -bg black -fg white -bw 0 \
+  -geometry 56x1+8-80 -T "MiniOS resources" \
+  -e /opt/minios/minios-resmon loop >/tmp/minios-resmon.log 2>&1 &
+echo $! >"$LOCK"
+exit 0

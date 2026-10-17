@@ -1,0 +1,221 @@
+#!/bin/sh
+# Copy Gateway test traces onto the live USB FAT so Windows (G:) can read them.
+# Never fail the caller. Never write to the internal hard drive.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+REASON="${1:-manual}"
+
+if [ "$(id -u)" -ne 0 ]; then
+  if command -v sudo >/dev/null 2>&1; then
+    sudo -n "$0" "$@" && exit 0
+  fi
+fi
+
+LOCK=/tmp/minios-log-usb.lock
+if ! mkdir "$LOCK" 2>/dev/null; then
+  exit 0
+fi
+trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+
+find_usb() {
+  for d in /mnt/*; do
+    [ -d "$d" ] || continue
+    if [ -f "$d/IMAGE-ID.txt" ] || [ -d "$d/cde/optional" ] || [ -f "$d/boot/core.gz" ]; then
+      echo "$d"
+      return 0
+    fi
+  done
+  for p in /dev/sda1 /dev/sdb1 /dev/sdc1 /dev/sdd1; do
+    [ -b "$p" ] || continue
+    mkdir -p /mnt/minios-usb
+    if mount "$p" /mnt/minios-usb 2>/dev/null; then
+      if [ -f /mnt/minios-usb/IMAGE-ID.txt ] || [ -d /mnt/minios-usb/cde/optional ] || [ -f /mnt/minios-usb/boot/core.gz ]; then
+        echo /mnt/minios-usb
+        return 0
+      fi
+      umount /mnt/minios-usb 2>/dev/null || true
+    fi
+  done
+  return 1
+}
+
+USB=$(find_usb) || exit 0
+mount -o remount,rw "$USB" 2>/dev/null || true
+[ -w "$USB" ] || exit 0
+
+# Refuse to fill the stick (v0.2.29 panic). Logs are tiny; still gate.
+USED=$(df -P "$USB" 2>/dev/null | awk 'NR==2 { gsub(/%/,"",$5); print $5 }')
+if [ -n "$USED" ] && [ "$USED" -gt 90 ]; then
+  exit 0
+fi
+
+DIR="$USB/minios-logs"
+mkdir -p "$DIR" || exit 0
+STAMP=$(date -u +%Y%m%d-%H%M%S 2>/dev/null || date +%Y%m%d-%H%M%S)
+OUT="$DIR/LATEST.txt"
+SES="$DIR/session-$STAMP.txt"
+
+{
+  echo "======== MiniOS USB test log ========"
+  echo "reason:    $REASON"
+  echo "time_utc:  $(date -u 2>/dev/null || date)"
+  echo "image:     $(cat /opt/minios/IMAGE-ID.txt 2>/dev/null || echo unknown)"
+  echo "version:   $(cat /opt/minios/VERSION 2>/dev/null || echo unknown)"
+  echo "plan:      $(cat /opt/minios/PLAN 2>/dev/null || echo unknown)"
+  echo "usb:       $USB"
+  echo "user:      $(id 2>/dev/null)"
+  echo "uname:     $(uname -a 2>/dev/null)"
+  echo "uptime:    $(cat /proc/uptime 2>/dev/null)"
+  echo "DISPLAY:   ${DISPLAY:-unset}"
+  echo "DESKTOP:   ${DESKTOP:-unset}"
+  echo "X_SOCKET:  $(ls -l /tmp/.X11-unix 2>&1)"
+  echo ""
+  echo "----- session / Xvesa (No such file or directory) -----"
+  echo "startx=$(command -v startx 2>/dev/null || echo missing)"
+  echo "Xvesa=$(command -v Xvesa 2>/dev/null || echo missing)"
+  echo "Xvesa_local=$(ls -l /usr/local/bin/Xvesa 2>&1)"
+  echo "Xvesa_base=$(ls -l /usr/bin/Xvesa 2>&1)"
+  if [ -x /usr/local/bin/Xvesa ]; then
+    if strings /usr/local/bin/Xvesa 2>/dev/null | grep -q -- '-nozap'; then
+      echo "Xvesa_nozap=yes"
+    else
+      echo "Xvesa_nozap=no"
+    fi
+  fi
+  echo "-- /home/tc/.xsession --"
+  ls -l /home/tc/.xsession 2>&1 || echo "(missing)"
+  cat /home/tc/.xsession 2>/dev/null || true
+  echo "-- /etc/skel/.xsession --"
+  ls -l /etc/skel/.xsession 2>&1 || echo "(missing)"
+  echo "-- /etc/sysconfig/desktop --"
+  cat /etc/sysconfig/desktop 2>/dev/null || echo "(missing)"
+  echo "-- /etc/sysconfig/Xserver --"
+  cat /etc/sysconfig/Xserver 2>/dev/null || echo "(missing)"
+  echo "-- /tmp/wm_errors --"
+  cat /tmp/wm_errors 2>/dev/null || echo "(missing)"
+  echo "-- /tmp/minios-xvesa-nozap.log --"
+  cat /tmp/minios-xvesa-nozap.log 2>/dev/null || echo "(missing)"
+  echo "-- dmesg No such file / error --"
+  dmesg 2>/dev/null | grep -iE 'no such file|error|fail|panic|init' | tail -40 || true
+  echo ""
+  if [ "$REASON" = "boot-early" ]; then
+    echo "----- early boot snapshot (X may not be up yet) -----"
+    echo "bootlocal=$(ls -l /opt/bootlocal.sh 2>&1)"
+    echo "======== end early ========"
+  fi
+} >"$OUT" 2>&1
+
+if [ "$REASON" = "boot-early" ]; then
+  cp -f "$OUT" "$SES" 2>/dev/null || true
+  {
+    echo "MiniOS USB test log"
+    echo "Open this folder: minios-logs\\LATEST.txt"
+    echo "reason=$REASON"
+    echo "time_utc=$(date -u 2>/dev/null || date)"
+    echo "image=$(cat /opt/minios/IMAGE-ID.txt 2>/dev/null)"
+    echo "X_SOCKET=$(ls /tmp/.X11-unix 2>&1)"
+  } >"$USB/MINIOS-LOG.TXT" 2>/dev/null || true
+  if [ ! -f "$DIR/README.txt" ]; then
+    cat >"$DIR/README.txt" <<'EOF'
+MiniOS writes these files on the live USB (FAT) during boot, even if the desktop fails.
+When the stick is back in Windows it is usually E: or G:.
+
+  minios-logs\LATEST.txt  full snapshot (read this first)
+  minios-logs\session-*   earlier snapshots
+  MINIOS-LOG.TXT          short pointer
+
+If the desktop did not start, LATEST.txt still has the session / Xvesa lines.
+EOF
+  fi
+  sync
+  exit 0
+fi
+
+{
+  echo "----- memory / disk -----"
+  free -m 2>/dev/null || cat /proc/meminfo 2>/dev/null | head -8
+  echo "-- df --"
+  df -h 2>/dev/null || df
+  echo ""
+  echo "----- tools -----"
+  echo "python3=$(command -v python3) $(python3 --version 2>&1)"
+  echo "python3.9=$(command -v python3.9)"
+  echo "yt-dlp=$(command -v yt-dlp)"
+  yt-dlp --version 2>&1 | head -2
+  echo "mplayer=$(command -v mplayer)"
+  echo "fltube=$(command -v fltube)"
+  echo "wget=$(command -v wget)"
+  echo ""
+  echo "----- sound -----"
+  echo "snd=$(ls -l /dev/snd 2>&1)"
+  echo "cards=$(cat /proc/asound/cards 2>/dev/null)"
+  echo ""
+  echo "----- processes (youtube/play) -----"
+  ps w 2>/dev/null | grep -iE 'fltube|mplayer|yt-dlp|python|minios-yt|minios-you' | grep -v grep || true
+  echo ""
+  echo "----- fltube.conf -----"
+  grep -E 'STREAM_|CACHE_|ENABLE_' /home/tc/.config/fltube/fltube.conf 2>/dev/null || true
+  echo ""
+  echo "----- /tmp/minios-youtube.log -----"
+  tail -c 40000 /tmp/minios-youtube.log 2>/dev/null || echo "(missing)"
+  echo ""
+  echo "----- /tmp/minios-yt-resolve.log -----"
+  tail -c 40000 /tmp/minios-yt-resolve.log 2>/dev/null || echo "(missing)"
+  echo ""
+  echo "----- /tmp/minios-sound.log -----"
+  tail -c 20000 /tmp/minios-sound.log 2>/dev/null || echo "(missing)"
+  echo ""
+  echo "----- fltube ytdlp_errors -----"
+  tail -c 12000 /tmp/fltube-cache/ytdlp_errors.log 2>/dev/null || \
+    tail -c 12000 /tmp/ytdlp_errors.log 2>/dev/null || echo "(missing)"
+  echo ""
+  echo "----- resolve cache -----"
+  cat /tmp/minios-yt-resolve.cache 2>/dev/null || echo "(none)"
+  echo ""
+  echo "----- dmesg tail (snd/usb/error) -----"
+  dmesg 2>/dev/null | grep -iE 'snd|alsa|error|fail|usb|init|panic' | tail -40 || true
+  echo "======== end ========"
+} >>"$OUT" 2>&1
+
+cp -f "$OUT" "$SES" 2>/dev/null || true
+for src in /tmp/minios-youtube.log /tmp/minios-yt-resolve.log /tmp/minios-sound.log \
+           /tmp/minios-mplayer.log /tmp/minios-audio.txt /tmp/startup.log; do
+  [ -f "$src" ] || continue
+  cp -f "$src" "$DIR/$(basename "$src")" 2>/dev/null || true
+done
+
+{
+  echo "MiniOS USB test log"
+  echo "Open this folder: minios-logs\\LATEST.txt"
+  echo "reason=$REASON"
+  echo "time_utc=$(date -u 2>/dev/null || date)"
+  echo "image=$(cat /opt/minios/IMAGE-ID.txt 2>/dev/null)"
+  echo ""
+  echo "----- last youtube lines -----"
+  tail -20 /tmp/minios-youtube.log 2>/dev/null
+  echo ""
+  echo "----- last resolve lines -----"
+  tail -20 /tmp/minios-yt-resolve.log 2>/dev/null
+} >"$USB/MINIOS-LOG.TXT" 2>/dev/null || true
+
+if [ ! -f "$DIR/README.txt" ]; then
+  cat >"$DIR/README.txt" <<'EOF'
+MiniOS writes these files on the live USB (FAT) during a Gateway test.
+When the stick is back in Windows it is usually G:.
+
+  G:\MINIOS-LOG.TXT          short pointer + last lines
+  G:\minios-logs\LATEST.txt  full snapshot (read this first)
+  G:\minios-logs\session-*   earlier snapshots (last few boots/plays)
+  G:\minios-logs\*.log       raw /tmp copies
+  G:\startup.log             boot / wifi / wallpaper check
+
+Play, search, and sound traces are in LATEST.txt.
+EOF
+fi
+
+# Keep the last 8 session files only.
+ls -1 "$DIR"/session-*.txt 2>/dev/null | tail -n +9 | while read -r old; do
+  rm -f "$old"
+done
+
+sync
+exit 0

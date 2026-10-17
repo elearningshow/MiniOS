@@ -1,0 +1,88 @@
+#!/bin/sh
+# Play ONE YouTube URL: download video+audio, then start mplayer. Do not
+# start the next clip — the player bar does that after this one finishes.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+LOG=/tmp/minios-shorts-play.log
+URL="$1"
+echo $$ >/tmp/minios-dl.pid
+GEN=$(cat /tmp/minios-play-gen 2>/dev/null || echo 0)
+export MINIOS_PLAY_GEN="$GEN"
+{
+  echo "===== shorts-play $(date -u) ====="
+  echo "url=$URL gen=$GEN pid=$$"
+} >>"$LOG"
+[ -n "$URL" ] || exit 1
+# New clip: drop the previous audio/caption files so Next/Prev cannot
+# play this picture with the last clip's sound.
+rm -f /tmp/minios-ytplay.audio /tmp/minios-ytplay.a.m4a /tmp/minios-ytplay.a.aac \
+      /tmp/minios-ytplay.a.webm /tmp/minios-ytplay.sub \
+      /tmp/minios-ytplay.en.srt /tmp/minios-ytplay.en.vtt
+printf 'youtube\n' >/tmp/minios-player-mode
+# Do not reload if the bar is already playing this list. That killed
+# the first download and broke Next after TikTok.
+if ! pgrep -f /opt/minios/minios-player-bar >/dev/null 2>&1 && \
+   ! pgrep -f /usr/local/bin/minios-player-bar >/dev/null 2>&1; then
+  echo 1 >/tmp/minios-mp.reload
+fi
+if [ -f /tmp/minios-mp.quit ]; then
+  if pgrep -x minios-player-bar >/dev/null 2>&1; then
+    echo "user quit, not starting next" >>"$LOG"
+    exit 0
+  fi
+  rm -f /tmp/minios-mp.quit
+  echo "cleared stale quit for a new play" >>"$LOG"
+fi
+export MINIOS_QUEUE_PLAY=1
+
+rmdir /tmp/minios-ytplay.lock 2>/dev/null || true
+# The bar already stopped the previous mplayer before this script starts.
+# Do not pkill here. That ended a just-started clip and skipped the list.
+
+YTDLP=/opt/minios/minios-yt-dlp
+[ -x "$YTDLP" ] || YTDLP=/usr/local/bin/minios-yt-dlp
+MP=/opt/minios/minios-mplayer
+[ -x "$MP" ] || MP=/usr/local/bin/minios-mplayer
+if [ ! -x "$YTDLP" ] || [ ! -x "$MP" ]; then
+  echo "missing play tools" >>"$LOG"
+  exit 127
+fi
+
+if [ -f /tmp/minios-mp.quit ]; then
+  echo "user quit before resolve" >>"$LOG"
+  exit 0
+fi
+printf '0\nDownloading video\n' >/tmp/minios-dl.progress
+got=$("$YTDLP" -g "$URL") || {
+  echo "resolve fail" >>"$LOG"
+  echo fail >/tmp/minios-mp.fail
+  exit 1
+}
+# Keep only the last non-empty line (the file path).
+got=$(printf '%s\n' "$got" | awk 'NF { p=$0 } END { print p }')
+echo "got=$got" >>"$LOG"
+[ -n "$got" ] || {
+  echo fail >/tmp/minios-mp.fail
+  exit 1
+}
+nowgen=$(cat /tmp/minios-play-gen 2>/dev/null || echo 0)
+if [ "$GEN" != "$nowgen" ]; then
+  echo "stale gen $GEN now=$nowgen, not playing" >>"$LOG"
+  exit 0
+fi
+if [ -f /tmp/minios-mp.quit ]; then
+  echo "user quit before play" >>"$LOG"
+  exit 0
+fi
+case "$got" in
+  /tmp/*|/*.mp4|/*.m4a|/*.mkv)
+    if [ ! -s "$got" ]; then
+      echo "downloaded file missing $got" >>"$LOG"
+      echo fail >/tmp/minios-mp.fail
+      exit 1
+    fi
+    ;;
+esac
+printf '100\nPlaying media file\n' >/tmp/minios-dl.progress
+echo "player-v20 starting mplayer $got" >>"$LOG"
+exec "$MP" "$got"

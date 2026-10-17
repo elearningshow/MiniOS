@@ -1,0 +1,46 @@
+#!/bin/sh
+# Light AP-05 popup: version + wallpaper + desktop only. No swap. No browser.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export HOME="${HOME:-/home/tc}"
+export DISPLAY="${DISPLAY:-:0}"
+LOG=/tmp/minios-check.log
+TITLE="MiniOS AP-05 baseline — photograph this window"
+VER=$(cat /opt/minios/VERSION 2>/dev/null || echo unknown)
+
+{
+  echo "===================================================="
+  echo "  Action plan: AP-05 — stable wallpaper baseline"
+  echo "  version: $VER"
+  echo "  $(date 2>/dev/null)"
+  echo "===================================================="
+  echo
+  echo "This is the recovery image. No swap. No browser."
+  echo
+  if [ -f /tmp/minios-wallpaper.ok ] || grep -q SUCCESS /tmp/minios-poc-wallpaper.log 2>/dev/null; then
+    echo "WALLPAPER: PASS — confirm mini-X image behind this window"
+  else
+    echo "WALLPAPER: check log"
+    tail -8 /tmp/minios-poc-wallpaper.log 2>/dev/null || true
+  fi
+  pgrep flwm >/dev/null 2>&1 && echo "DESKTOP: flwm running" || echo "DESKTOP: flwm not seen"
+  [ -e /tmp/.X11-unix/X0 ] && echo "X: socket present" || echo "X: no socket"
+  echo
+  echo "Open a terminal from the dock to confirm the desktop is usable."
+  echo "Reboot once and confirm wallpaper returns."
+  echo "===================================================="
+} >"$LOG" 2>&1
+
+for d in /mnt/*; do
+  [ -d "$d/cde/optional" ] && [ -w "$d" ] && cp -f "$LOG" "$d/AP-05-REPORT.txt" 2>/dev/null
+done
+
+if [ "${1:-}" = "--cli" ] || [ -z "${DISPLAY:-}" ]; then
+  cat "$LOG"
+  exit 0
+fi
+if command -v aterm >/dev/null 2>&1; then
+  aterm -title "$TITLE" -geometry 90x24 -e sh -c "cat '$LOG'; echo; echo Press Enter; read x"
+  exit 0
+fi
+cat "$LOG"
+exit 0

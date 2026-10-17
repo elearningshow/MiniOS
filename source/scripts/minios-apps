@@ -1,0 +1,181 @@
+#!/bin/sh
+# Track loaded apps vs OS-keep processes.
+# OS-keep must stay: X, window manager, dock, wallpaper, Wi-Fi, resource bar.
+# App kits (TikTok, YouTube, Nightly, player, text browser) are registered
+# when they start and killed on close / Refresh RAM.
+#
+# Usage:
+#   minios-apps register NAME PID
+#   minios-apps unregister NAME
+#   minios-apps kill-all
+#   minios-apps status
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+DIR=/tmp/minios-apps
+LOG=/tmp/minios-apps.log
+mkdir -p "$DIR"
+CMD="${1:-}"
+NAME="${2:-}"
+PID="${3:-}"
+
+# Processes the desktop needs. Never pkill these from Refresh RAM.
+write_keep() {
+  cat >"$DIR/KEEP.txt" <<'EOF'
+Xvesa
+Xorg
+X
+flwm
+wbar
+feh
+wpa_supplicant
+udhcpc
+udhcpc6
+udevd
+earlyoom
+minios-cad
+minios-resmon
+minios-rsmon
+minios-resmon-x11
+EOF
+}
+
+is_keep_name() {
+  case "$1" in
+    Xvesa|Xorg|X|flwm|wbar|feh|wpa_supplicant|udhcpc|udhcpc6|udevd|earlyoom)
+      return 0 ;;
+    minios-cad|minios-resmon|minios-rsmon|minios-resmon-x11)
+      return 0 ;;
+  esac
+  return 1
+}
+
+canon() {
+  n=$(printf '%s' "$1" | sed 's/^minios-//')
+  case "$n" in
+    fltube|youtube) echo youtube ;;
+    tiktok) echo tiktok ;;
+    player|player-bar|mplayer) echo player ;;
+    mp3|music) echo mp3 ;;
+    text-browser|links) echo text-browser ;;
+    quick-search) echo quick-search ;;
+    nightly|firefox) echo nightly ;;
+    *) echo "$n" ;;
+  esac
+}
+
+do_register() {
+  app=$(canon "$NAME")
+  [ -n "$app" ] || return 1
+  if is_keep_name "$app"; then
+    echo "refuse register keep $app" >>"$LOG"
+    return 0
+  fi
+  echo "${PID:-0}" >"$DIR/$app.pid"
+  date -u +%s >"$DIR/$app.start"
+  echo "$app" >>"$DIR/LOADED.txt"
+  write_keep
+  echo "register $app pid=${PID:-0} $(date -u)" >>"$LOG"
+}
+
+do_unregister() {
+  app=$(canon "$NAME")
+  rm -f "$DIR/$app.pid" "$DIR/$app.start"
+  if [ -f "$DIR/LOADED.txt" ]; then
+    grep -vx "$app" "$DIR/LOADED.txt" >"$DIR/LOADED.txt.tmp" 2>/dev/null || true
+    mv "$DIR/LOADED.txt.tmp" "$DIR/LOADED.txt"
+  fi
+  echo "unregister $app $(date -u)" >>"$LOG"
+}
+
+do_status() {
+  write_keep
+  echo "KEEP (leave running):"
+  cat "$DIR/KEEP.txt"
+  echo "LOADED (safe to close):"
+  if [ -f "$DIR/LOADED.txt" ]; then
+    sort -u "$DIR/LOADED.txt"
+  fi
+}
+
+kill_named() {
+  app=$(canon "$1")
+  if is_keep_name "$app"; then
+    echo "skip keep $app" >>"$LOG"
+    return 0
+  fi
+  echo "kill-named $app" >>"$LOG"
+  if [ -x /opt/minios/minios-appkit ]; then
+    /opt/minios/minios-appkit unload "$app" >>"$LOG" 2>&1 || true
+  fi
+  case "$app" in
+    tiktok)
+      pkill -x minios-tiktok 2>/dev/null || true
+      pkill -f /opt/minios/minios-tiktok 2>/dev/null || true
+      pkill -f /usr/local/bin/minios-tiktok 2>/dev/null || true
+      pkill -f minios-tiktok-search 2>/dev/null || true
+      pkill -f minios-tiktok-thumbs 2>/dev/null || true
+      pkill -f minios-tiktok-play 2>/dev/null || true
+      pkill -f /opt/minios/minios-tt-player-bar 2>/dev/null || true
+      pkill -f /usr/local/bin/minios-tt-player-bar 2>/dev/null || true
+      pkill -f /opt/minios/minios-tt-mplayer 2>/dev/null || true
+      pkill -f /usr/local/bin/minios-tt-mplayer 2>/dev/null || true
+      ;;
+    youtube)
+      pkill -x fltube 2>/dev/null || true
+      pkill -f /opt/minios/minios-youtube 2>/dev/null || true
+      ;;
+    player)
+      pkill -f /opt/minios/minios-player-bar 2>/dev/null || true
+      pkill -x mplayer 2>/dev/null || true
+      ;;
+    text-browser|quick-search)
+      pkill -x links 2>/dev/null || true
+      pkill -f minios-text-browser 2>/dev/null || true
+      pkill -f minios-quick-search 2>/dev/null || true
+      ;;
+    nightly)
+      pkill -f firefox-bin 2>/dev/null || true
+      pkill -f /usr/local/lib/firefox/firefox 2>/dev/null || true
+      pkill -x firefox 2>/dev/null || true
+      ;;
+  esac
+  if [ -s "$DIR/$app.pid" ]; then
+    kill "$(cat "$DIR/$app.pid")" 2>/dev/null || true
+  fi
+  rm -f "$DIR/$app.pid" "$DIR/$app.start"
+}
+
+do_kill_all() {
+  echo "===== kill-all $(date -u) =====" >>"$LOG"
+  write_keep
+  for f in "$DIR"/*.pid; do
+    [ -f "$f" ] || continue
+    kill_named "$(basename "$f" .pid)"
+  done
+  for n in tiktok youtube player mp3 text-browser quick-search nightly; do
+    kill_named "$n"
+  done
+  pkill -x minios-tiktok 2>/dev/null || true
+  pkill -9 -x minios-tiktok 2>/dev/null || true
+  : >"$DIR/LOADED.txt"
+  echo "kill-all done" >>"$LOG"
+}
+
+case "$CMD" in
+  register)
+    do_register
+    ;;
+  unregister)
+    do_unregister
+    ;;
+  kill-all)
+    do_kill_all
+    ;;
+  status)
+    do_status
+    ;;
+  *)
+    echo "usage: minios-apps register|unregister|kill-all|status NAME [PID]" >&2
+    exit 1
+    ;;
+esac
+exit 0

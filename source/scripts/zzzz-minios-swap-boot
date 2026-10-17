@@ -1,0 +1,3 @@
+#!/bin/sh
+# Boot must not build the dock or start AI. The desktop runs the X.d copy.
+exit 0

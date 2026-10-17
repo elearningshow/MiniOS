@@ -1,0 +1,9 @@
+{
+  "policies": {
+    "ExtensionSettings": {
+      "minios-view-image@minios": {
+        "installation_mode": "normal_installed"
+      }
+    }
+  }
+}

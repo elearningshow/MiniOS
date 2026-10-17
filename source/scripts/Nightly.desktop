@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Nightly
+Comment=Embedded browser (Nightly chrome)
+Exec=/usr/local/bin/minios-run nightly -- /usr/local/bin/minios-firefox
+Icon=/usr/local/share/pixmaps/minios/YGSKE.png
+X-FullPathIcon=/usr/local/share/pixmaps/minios/YGSKE.png
+Terminal=false
+Categories=Network;WebBrowser;
+StartupNotify=false

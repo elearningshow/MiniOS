@@ -1,0 +1,109 @@
+#!/bin/sh
+# Compatibility wrapper. SWAP-AP-01 helper is minios-create-swap.
+# Create/enable a swap FILE on the internal disk. NEVER format the disk. NEVER install OS.
+if [ -x /usr/local/bin/minios-create-swap ]; then
+  case "${1:-}" in
+    ""|--*) exec /usr/local/bin/minios-create-swap --disk "$@" ;;
+    *) exec /usr/local/bin/minios-create-swap --disk --size="${1}G" ;;
+  esac
+fi
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-swap.log
+SWAPNAME=minios-swapfile
+SIZE_G="${1:-4}"
+
+need_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    exec sudo -E "$0" "$@"
+  fi
+}
+
+{
+  echo "======== minios-swap $(date) ========"
+  echo "Policy: live USB only. Will not mkfs or install MiniOS to the internal drive."
+  echo "Requested size: ${SIZE_G}G"
+  echo
+
+  echo "----- current memory / swap -----"
+  free 2>/dev/null || cat /proc/meminfo | head -8
+  swapon -s 2>/dev/null || cat /proc/swaps
+  echo
+
+  # Find large internal disk
+  DISK=""
+  for d in /sys/block/sd* /sys/block/hd*; do
+    [ -d "$d" ] || continue
+    name=$(basename "$d")
+    size=$(cat "$d/size" 2>/dev/null || echo 0)
+    if [ "$size" -gt 200000000 ]; then
+      DISK="/dev/$name"
+      break
+    fi
+  done
+
+  if [ -z "$DISK" ]; then
+    echo "FAIL: internal ~160GB disk not visible. Run: sudo minios-internal"
+    echo "SWAP=NOT_CREATED"
+    exit 1
+  fi
+  echo "Using disk $DISK"
+
+  # Find first mountable existing partition — do not create/format
+  PART=""
+  MNT=/mnt/internal
+  mkdir -p "$MNT"
+  if mountpoint -q "$MNT" 2>/dev/null; then
+    echo "Already mounted: $MNT"
+  else
+    for p in ${DISK}1 ${DISK}2 ${DISK}p1 ${DISK}p2; do
+      [ -b "$p" ] || continue
+      echo "Trying mount $p (no format)..."
+      if mount "$p" "$MNT" 2>/dev/null; then
+        PART="$p"
+        echo "Mounted $p on $MNT"
+        break
+      fi
+    done
+  fi
+
+  if ! mountpoint -q "$MNT" 2>/dev/null; then
+    echo "FAIL: could not mount any existing filesystem on $DISK"
+    echo "Refusing to format. If the drive has no filesystem, create one yourself"
+    echo "ONLY if you intend to — this script will not do it."
+    fdisk -l "$DISK" 2>/dev/null || true
+    echo "SWAP=NOT_CREATED"
+    exit 1
+  fi
+
+  SWAPFILE="$MNT/$SWAPNAME"
+  echo "SWAPFILE=$SWAPFILE"
+
+  if [ ! -f "$SWAPFILE" ]; then
+    echo "Creating ${SIZE_G}G swap file (this may take a few minutes)..."
+    if command -v fallocate >/dev/null 2>&1 && fallocate -l "${SIZE_G}G" "$SWAPFILE" 2>/dev/null; then
+      echo "fallocate ok"
+    else
+      # BusyBox-friendly
+      dd if=/dev/zero of="$SWAPFILE" bs=1M count=$((SIZE_G * 1024)) status=none
+    fi
+    chmod 600 "$SWAPFILE"
+    mkswap "$SWAPFILE"
+  else
+    echo "Swap file already exists"
+    chmod 600 "$SWAPFILE"
+  fi
+
+  swapon "$SWAPFILE" 2>/dev/null || swapon -v "$SWAPFILE"
+  echo
+  echo "----- after -----"
+  free
+  echo
+  cat /proc/swaps
+  echo "SWAPFILE=$SWAPFILE" > /tmp/minios-swap.path
+  echo "SWAP=ACTIVE $SWAPFILE"
+  echo "======== end minios-swap ========"
+} 2>&1 | tee "$LOG"
+
+echo "Log: $LOG"
+echo -n "Press Enter to close... "
+read _ans || true

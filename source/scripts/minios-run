@@ -1,0 +1,709 @@
+#!/bin/sh
+# ICON-LAUNCH + FLTUBE-AP-01 v1.1
+# Usage: minios-run [name] [--tcz pkg.tcz ...] [--] command [args...]
+# First click: show "Application is loading. Please wait." and start one copy.
+# Later clicks while it is starting or running: same alert, do not start another.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+export HOME="${HOME:-/home/tc}"
+
+ALERT="Application is loading. Please wait."
+case " $* " in
+  *" minios-refresh-ram "*|*" refresh-ram "*)
+    ALERT="Refresh RAM is loading. Please wait."
+    ;;
+  *" minios-youtube "*|*" youtube "*)
+    ALERT="YouTube is loading. Please wait."
+    ;;
+  *" minios-tiktok "*|*" tiktok "*)
+    ALERT="TikTok is loading. Please wait."
+    ;;
+  *" minios-music "*|*" music "*|*" minios-mp3 "*)
+    ALERT="Music is loading. Please wait."
+    ;;
+  *" minios-player "*|*" player "*)
+    ALERT="MiniOS Media Player is loading. Please wait."
+    ;;
+  *" minios-ai "*|*" ai "*)
+    ALERT="AI is loading. Please wait."
+    ;;
+  *" document "*|*" abiword "*)
+    ALERT="Document is loading. Please wait."
+    ;;
+  *" spreadsheet "*|*" gnumeric "*)
+    ALERT="Spreadsheet is loading. Please wait."
+    ;;
+esac
+
+if [ "$#" -lt 1 ]; then
+  echo "usage: minios-run [name] [--tcz PKG...] [--] COMMAND [args...]"
+  exit 1
+fi
+
+NAME=""
+case "$1" in
+  --*|/*|*/*) ;;
+  *) NAME="$1"; shift ;;
+esac
+
+TCZS=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --tcz)
+      shift
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --tcz|--|-*|/*minios-*|*fltube*|*firefox*) break ;;
+        esac
+        case "$1" in
+          *.tcz|*.TCZ) TCZS="$TCZS $1"; shift ;;
+          *)
+            case "$1" in
+              python3*|mplayer*|alsa*|fltube*|ffmpeg*)
+                TCZS="$TCZS $1"
+                shift
+                ;;
+              *) break ;;
+            esac
+            ;;
+        esac
+      done
+      ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+
+if [ -z "$NAME" ] && [ "$#" -ge 1 ]; then
+  NAME=$(basename "$1" | sed 's/^minios-//')
+fi
+
+# Dock rows such as "minios-run minios-text-browser" omit the binary.
+if [ "$#" -lt 1 ] && [ -n "$NAME" ]; then
+  for p in "/opt/minios/$NAME" "/usr/local/bin/$NAME" \
+           "/opt/minios/minios-$NAME" "/usr/local/bin/minios-$NAME"; do
+    if [ -x "$p" ]; then
+      set -- "$p"
+      break
+    fi
+  done
+fi
+
+if [ "$#" -lt 1 ]; then
+  echo "usage: minios-run [name] [--tcz PKG...] [--] COMMAND [args...]"
+  exit 1
+fi
+
+if [ -z "$NAME" ]; then
+  NAME=$(basename "$1" | sed 's/^minios-//')
+fi
+case "$NAME" in
+  refresh-ram|minios-refresh-ram)
+    ALERT="Refresh RAM is loading. Please wait."
+    ;;
+  youtube|fltube|minios-youtube)
+    ALERT="YouTube is loading. Please wait."
+    ;;
+  tiktok|minios-tiktok)
+    ALERT="TikTok is loading. Please wait."
+    ;;
+  text-browser|minios-text-browser|links)
+    ALERT="Text Browser is loading. Please wait."
+    ;;
+  quick-search|minios-quick-search)
+    ALERT="Quick Search is loading. Please wait."
+    ;;
+  nightly|firefox|minios-firefox)
+    ALERT="Nightly is loading. Please wait."
+    ;;
+  music|mp3|minios-music|minios-mp3)
+    ALERT="Music is loading. Please wait."
+    ;;
+  player|minios-player|minios-player-bar)
+    ALERT="MiniOS Media Player is loading. Please wait."
+    ;;
+  ai|minios-ai)
+    ALERT="AI is loading. Please wait."
+    ;;
+  streaming|minios-streaming)
+    ALERT="Streaming is loading. Please wait."
+    ;;
+esac
+
+# Do not lock the session exit / dock restart.
+# Create Swap must exec aterm and keep it; wait+pkill closed the window.
+case "$NAME" in
+  wbar|wbar.sh|exit|exittc|reboot|shutdown)
+    exec "$@"
+    ;;
+  refresh-ram|minios-refresh-ram|"Refresh RAM")
+    # Same as Ctrl+Alt+Delete. Do not take a lock — leftover locks ate the click.
+    exec "$@"
+    ;;
+  create-swap|minios-create-swap|Create-Swap|CreateSwap|aterm)
+    if command -v popup >/dev/null 2>&1; then
+      popup "$ALERT" >/dev/null 2>&1 &
+    fi
+    exec "$@"
+    ;;
+esac
+
+LOCKDIR=/tmp/minios-run-${NAME}.lock
+START=/tmp/minios-run-${NAME}.start
+now=$(date +%s 2>/dev/null || echo 0)
+
+auto_reclaim_on() {
+  f=/home/tc/.minios/auto-reclaim
+  [ -f "$f" ] || return 0
+  grep -qx off "$f" && return 1
+  return 0
+}
+
+wait_if_reclaiming() {
+  n=0
+  while [ -f /tmp/minios-reclaiming ]; do
+    if [ "$n" -ge 120 ]; then
+      rm -f /tmp/minios-reclaiming
+      break
+    fi
+    sleep 0.5
+    n=$((n + 1))
+  done
+}
+
+show_ram_wait() {
+  : >/tmp/minios-reclaiming
+  : >/tmp/minios-notice.shown
+  rm -f /tmp/minios-notice.done
+  if [ -x /opt/minios/minios-cad ]; then
+    /opt/minios/minios-cad --notice "Please wait." "Freeing memory." >/dev/null 2>&1 &
+  elif [ -x /usr/local/bin/minios-cad ]; then
+    /usr/local/bin/minios-cad --notice "Please wait." "Freeing memory." >/dev/null 2>&1 &
+  elif [ -x /opt/minios/minios-loading ]; then
+    /opt/minios/minios-loading 90 "Please wait. Freeing memory."
+  elif command -v xmessage >/dev/null 2>&1; then
+    DISPLAY="${DISPLAY:-:0}" xmessage -center -timeout 90 "Please wait. Freeing memory." &
+  fi
+}
+
+end_ram_wait() {
+  : >/tmp/minios-notice.done
+  if [ -x /opt/minios/minios-loading ]; then
+    /opt/minios/minios-loading stop >/dev/null 2>&1 || true
+  fi
+  rm -f /tmp/minios-reclaiming /tmp/minios-notice.pid /tmp/minios-notice.shown
+}
+
+run_close_reclaim() {
+  app="${1:-}"
+  if [ ! -f /tmp/minios-notice.shown ]; then
+    show_ram_wait
+    sleep 0.15
+  fi
+  ram0=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+  z0=$(awk 'NR>1 && $1 ~ /zram/ {u+=$4} END {print u+0}' /proc/swaps 2>/dev/null || echo 0)
+  s0=$(awk 'NR>1 && $1 !~ /zram/ {u+=$4} END {print u+0}' /proc/swaps 2>/dev/null || echo 0)
+  echo "close-track $app before ram_free=${ram0}kB zram_used=${z0}kB swap_used=${s0}kB" >>/tmp/minios-reclaim.log
+  if [ -x /usr/local/bin/minios-reclaim ]; then
+    sudo -n /usr/local/bin/minios-reclaim auto "$app" >>/tmp/minios-reclaim.log 2>&1 || \
+      /usr/local/bin/minios-reclaim auto "$app" >>/tmp/minios-reclaim.log 2>&1 || true
+  elif [ -x /opt/minios/minios-reclaim ]; then
+    sudo -n /opt/minios/minios-reclaim auto "$app" >>/tmp/minios-reclaim.log 2>&1 || \
+      /opt/minios/minios-reclaim auto "$app" >>/tmp/minios-reclaim.log 2>&1 || true
+  fi
+  ram1=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+  z1=$(awk 'NR>1 && $1 ~ /zram/ {u+=$4} END {print u+0}' /proc/swaps 2>/dev/null || echo 0)
+  s1=$(awk 'NR>1 && $1 !~ /zram/ {u+=$4} END {print u+0}' /proc/swaps 2>/dev/null || echo 0)
+  echo "close-track $app after ram_free=${ram1}kB zram_used=${z1}kB swap_used=${s1}kB" >>/tmp/minios-reclaim.log
+  end_ram_wait
+}
+
+stop_loading() {
+  if [ -x /opt/minios/minios-loading ]; then
+    /opt/minios/minios-loading stop >/dev/null 2>&1 || true
+  elif [ -x /usr/local/bin/minios-loading ]; then
+    /usr/local/bin/minios-loading stop >/dev/null 2>&1 || true
+  else
+    pkill -x xmessage >/dev/null 2>&1 || true
+    rm -f /tmp/minios-run-alert.lock /tmp/minios-loading.pid
+  fi
+}
+
+alert_loading() {
+  secs="${1:-15}"
+  if [ -x /opt/minios/minios-loading ]; then
+    /opt/minios/minios-loading "$secs" "$ALERT"
+    return 0
+  fi
+  if [ -x /usr/local/bin/minios-loading ]; then
+    /usr/local/bin/minios-loading "$secs" "$ALERT"
+    return 0
+  fi
+  if [ -f /tmp/minios-run-alert.lock ]; then
+    return 0
+  fi
+  touch /tmp/minios-run-alert.lock
+  (
+    if command -v xmessage >/dev/null 2>&1; then
+      xmessage -center -timeout "$secs" "$ALERT"
+    elif command -v aterm >/dev/null 2>&1; then
+      aterm +tr +sb -bg black -fg white -T MiniOS -geometry 52x3+200+180 \
+        -e sh -c "echo \"$ALERT\"; sleep $secs"
+    elif command -v popup >/dev/null 2>&1; then
+      popup "$ALERT" &
+      pp=$!
+      sleep "$secs"
+      kill "$pp" 2>/dev/null || true
+    fi
+    rm -f /tmp/minios-run-alert.lock
+  ) >/dev/null 2>&1 &
+}
+
+fltube_up() {
+  if command -v pgrep >/dev/null 2>&1; then
+    pgrep -x fltube >/dev/null 2>&1 && return 0
+    pgrep -x FLTube >/dev/null 2>&1 && return 0
+    pgrep -f '/usr/local/bin/fltube' >/dev/null 2>&1 && return 0
+    pgrep -f '/opt/minios/bin/fltube' >/dev/null 2>&1 && return 0
+  fi
+  for c in /proc/[0-9]*/comm; do
+    [ -r "$c" ] || continue
+    n=$(cat "$c" 2>/dev/null)
+    case "$n" in fltube|FLTube) return 0 ;; esac
+  done
+  return 1
+}
+
+app_up() {
+  case "$NAME" in
+    youtube|fltube|minios-youtube)
+      fltube_up && return 0
+      # Stale lock after TikTok reclaim killed FLTube — allow a new start.
+      return 1
+      ;;
+    nightly|firefox|minios-firefox)
+      pgrep -f '/usr/local/lib/firefox/firefox' >/dev/null 2>&1 && return 0
+      pgrep -f 'firefox-bin' >/dev/null 2>&1 && return 0
+      ;;
+    text-browser|minios-text-browser)
+      # Do not match this minios-run process. Its command line contains the name.
+      for p in $(pgrep -f '/opt/minios/minios-text-browser' 2>/dev/null; pgrep -f '/usr/local/bin/minios-text-browser' 2>/dev/null); do
+        [ "$p" = "$$" ] && continue
+        [ "$p" = "$PPID" ] && continue
+        return 0
+      done
+      return 1
+      ;;
+    refresh-ram|minios-refresh-ram|"Refresh RAM")
+      pgrep -f '/usr/local/bin/minios-refresh-ram' >/dev/null 2>&1 && return 0
+      pgrep -f '/opt/minios/minios-refresh-ram' >/dev/null 2>&1 && return 0
+      ;;
+    create-swap|minios-create-swap|Create-Swap|CreateSwap)
+      pgrep -f 'minios-create-swap' >/dev/null 2>&1 && return 0
+      ;;
+    quick-search|minios-quick-search)
+      for p in $(pgrep -f '/opt/minios/minios-quick-search' 2>/dev/null; pgrep -f '/usr/local/bin/minios-quick-search' 2>/dev/null); do
+        [ "$p" = "$$" ] && continue
+        [ "$p" = "$PPID" ] && continue
+        return 0
+      done
+      return 1
+      ;;
+    music|mp3|minios-music|minios-mp3)
+      pgrep -x minios-mp3 >/dev/null 2>&1 && return 0
+      ;;
+    player|minios-player|minios-player-bar)
+      # Leftover bar from TikTok/YouTube must not block the dock icon.
+      return 1
+      ;;
+    tiktok|minios-tiktok)
+      [ -f /tmp/minios-tiktok.ready ] && return 0
+      pgrep -x minios-tiktok >/dev/null 2>&1 && return 0
+      pgrep -f '/opt/minios/minios-tiktok' >/dev/null 2>&1 && return 0
+      ;;
+  esac
+  return 1
+}
+
+lock_holder_alive() {
+  [ -d "$LOCKDIR" ] || return 1
+  lp=$(cat "$LOCKDIR/pid" 2>/dev/null)
+  [ -n "$lp" ] || return 1
+  kill -0 "$lp" 2>/dev/null
+}
+
+# Always tell the user the icon was received. A leftover lock used to
+# hide the loading popup (YouTube looked like it did nothing).
+rm -f /tmp/minios-run-alert.lock
+case "$NAME" in
+  refresh-ram|minios-refresh-ram|"Refresh RAM"|wbar|wbar.sh|exit|exittc|reboot|shutdown)
+    ;;
+  *)
+    alert_loading 45
+    ;;
+esac
+
+wait_if_reclaiming
+
+# A closed app must be startable again in the same session.
+# v0.2.50: leftover lock / 8-second recent_start / "already running"
+# showed "YouTube is loading" and never launched.
+# v0.2.92: CAD Refresh left lock directories and a waiting minios-run.
+# Dock clicks then exited 0. Steal a stale lock when the app is gone.
+if app_up; then
+  case "$NAME" in
+    youtube|fltube|minios-youtube)
+      stop_loading
+      alert_loading 8
+      sleep 1
+      stop_loading
+      ;;
+    *)
+      stop_loading
+      ;;
+  esac
+  exit 0
+fi
+if [ -d "$LOCKDIR" ]; then
+  if lock_holder_alive; then
+    started=$(cat "$START" 2>/dev/null || echo 0)
+    age=$((now - started))
+    if [ "$started" != 0 ] && [ "$age" -ge 0 ] && [ "$age" -lt 20 ]; then
+      exit 0
+    fi
+  fi
+  rm -rf "$LOCKDIR"
+  rm -f "$START"
+fi
+
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+  if app_up; then
+    stop_loading
+    exit 0
+  fi
+  if ! lock_holder_alive; then
+    rm -rf "$LOCKDIR"
+    mkdir "$LOCKDIR" || exit 1
+  else
+    exit 0
+  fi
+fi
+echo $$ >"$LOCKDIR/pid"
+echo "$now" >"$START"
+# Refresh RAM shows its own status window. The xmessage alert is killed
+# by reclaim and looks like the button did nothing.
+case "$NAME" in
+  refresh-ram|minios-refresh-ram|"Refresh RAM")
+    ;;
+  *)
+    alert_loading 30
+    ;;
+esac
+
+for t in $TCZS; do
+  if [ -x /opt/minios/minios-load-tcz ]; then
+    /opt/minios/minios-load-tcz "$t" || true
+  fi
+done
+# Load this icon's full kit (python, player, links, …) before the program starts.
+if [ -x /opt/minios/minios-appkit ]; then
+  /opt/minios/minios-appkit load "$NAME" >>/tmp/minios-appkit.log 2>&1 || true
+fi
+case "$NAME" in
+  ai|minios-ai)
+    # Active means Python can run, not only that Wi-Fi is up.
+    if /usr/local/bin/python3.9 -c 'print(1)' >/tmp/minios-ai.log 2>&1; then
+      echo ok >/tmp/minios-ai.helper
+    else
+      rm -f /tmp/minios-ai.helper
+      echo "python3.9 did not start" >>/tmp/minios-ai.log
+    fi
+    ;;
+esac
+case "$NAME" in
+  youtube|fltube|minios-youtube)
+    rm -f /tmp/minios-gui-closed-youtube
+    ;;
+  tiktok|minios-tiktok)
+    rm -f /tmp/minios-gui-closed-tiktok
+    ;;
+  streaming|minios-streaming)
+    rm -f /tmp/minios-streaming.ready
+    ;;
+esac
+
+# Text Browser and Quick Search are aterm windows. Waiting here and then
+# running Freeing memory killed links while the window was still opening.
+# Same rule as Create Swap: exec and keep the window.
+case "$NAME" in
+  text-browser|minios-text-browser|links|quick-search|minios-quick-search)
+    stop_loading
+    rm -f /tmp/minios-reclaiming
+    exec "$@"
+    ;;
+esac
+
+"$@" &
+APP=$!
+if [ -x /opt/minios/minios-apps ]; then
+  /opt/minios/minios-apps register "$NAME" "$APP" >>/tmp/minios-apps.log 2>&1 || true
+elif [ -x /usr/local/bin/minios-apps ]; then
+  /usr/local/bin/minios-apps register "$NAME" "$APP" >>/tmp/minios-apps.log 2>&1 || true
+fi
+
+# YouTube: only report fail if the launcher died and FLTube is not running.
+# v0.2.31 showed "YouTube did not open" after 15s while FLTube was already open
+# (sound-up blocked start past the deadline).
+case "$NAME" in
+  youtube|fltube|minios-youtube)
+    n=0
+    while [ "$n" -lt 40 ]; do
+      if fltube_up; then
+        stop_loading
+        break
+      fi
+      if ! kill -0 "$APP" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+      n=$((n + 1))
+    done
+    if ! fltube_up && ! kill -0 "$APP" 2>/dev/null; then
+      echo "YouTube did not open." >>/tmp/minios-youtube.log
+      if [ -x /opt/minios/minios-youtube-fail ]; then
+        /opt/minios/minios-youtube-fail >/dev/null 2>&1 &
+      elif [ -x /usr/local/bin/minios-youtube-fail ]; then
+        /usr/local/bin/minios-youtube-fail >/dev/null 2>&1 &
+      fi
+    fi
+    ;;
+  tiktok|minios-tiktok)
+    n=0
+    while [ "$n" -lt 25 ]; do
+      if [ -f /tmp/minios-tiktok.ready ] || pgrep -x minios-tiktok >/dev/null 2>&1; then
+        stop_loading
+        break
+      fi
+      if ! kill -0 "$APP" 2>/dev/null; then
+        break
+      fi
+      sleep 0.2
+      n=$((n + 1))
+    done
+    ;;
+  text-browser|minios-text-browser|links)
+    n=0
+    while [ "$n" -lt 25 ]; do
+      if [ -f /tmp/minios-tb.ready ] || pgrep -f minios-text-browser >/dev/null 2>&1; then
+        stop_loading
+        break
+      fi
+      if ! kill -0 "$APP" 2>/dev/null; then
+        break
+      fi
+      sleep 0.2
+      n=$((n + 1))
+    done
+    stop_loading
+    ;;
+  ai|minios-ai)
+    n=0
+    while [ "$n" -lt 25 ]; do
+      if [ -f /tmp/minios-ai.ready ]; then
+        stop_loading
+        break
+      fi
+      if ! kill -0 "$APP" 2>/dev/null; then
+        break
+      fi
+      sleep 0.2
+      n=$((n + 1))
+    done
+    stop_loading
+    ;;
+  quick-search|minios-quick-search)
+    n=0
+    while [ "$n" -lt 25 ]; do
+      if [ -f /tmp/minios-qs.ready ] || pgrep -f minios-quick-search >/dev/null 2>&1; then
+        stop_loading
+        break
+      fi
+      if ! kill -0 "$APP" 2>/dev/null; then
+        break
+      fi
+      sleep 0.2
+      n=$((n + 1))
+    done
+    stop_loading
+    ;;
+  player|minios-player|minios-player-bar)
+    n=0
+    while [ "$n" -lt 25 ]; do
+      if pgrep -f '/opt/minios/minios-player-bar' >/dev/null 2>&1 ||
+         pgrep -f '/usr/local/bin/minios-player-bar' >/dev/null 2>&1; then
+        stop_loading
+        break
+      fi
+      if ! kill -0 "$APP" 2>/dev/null; then
+        break
+      fi
+      sleep 0.2
+      n=$((n + 1))
+    done
+    ;;
+  streaming|minios-streaming)
+    n=0
+    while [ "$n" -lt 25 ]; do
+      if [ -f /tmp/minios-streaming.ready ] || pgrep -x minios-streaming >/dev/null 2>&1; then
+        stop_loading
+        break
+      fi
+      if ! kill -0 "$APP" 2>/dev/null; then
+        break
+      fi
+      sleep 0.2
+      n=$((n + 1))
+    done
+    ;;
+  document|spreadsheet)
+    n=0
+    while [ "$n" -lt 40 ]; do
+      if pgrep -x abiword >/dev/null 2>&1 || pgrep -x gnumeric >/dev/null 2>&1; then
+        stop_loading
+        break
+      fi
+      if ! kill -0 "$APP" 2>/dev/null; then
+        break
+      fi
+      sleep 0.5
+      n=$((n + 1))
+    done
+    stop_loading
+    ;;
+esac
+
+wait "$APP"
+status=$?
+# Block every other dock click before cleanup so Text Browser cannot
+# start while TikTok leftover RAM is still being released.
+: >/tmp/minios-reclaiming
+# Show the RAM wait as soon as the app has exited (Nightly can take
+# several seconds to finish quitting before wait returns).
+case "$NAME" in
+  create-swap|minios-create-swap|Create-Swap|CreateSwap|aterm)
+    ;;
+  player|minios-player|minios-player-bar)
+    ;;
+  youtube|fltube|minios-youtube|tiktok|minios-tiktok)
+    ;;
+  *)
+    if [ ! -f /tmp/minios-refreshing ] && auto_reclaim_on; then
+      show_ram_wait
+    fi
+    ;;
+esac
+
+case "$NAME" in
+  youtube|fltube|minios-youtube)
+    # Copy the USB trace in the background so memory can be freed now.
+    if [ -x /opt/minios/minios-log-usb ]; then
+      sudo -n /opt/minios/minios-log-usb youtube-done >/dev/null 2>&1 &
+    elif [ -x /usr/local/bin/minios-log-usb ]; then
+      sudo -n /usr/local/bin/minios-log-usb youtube-done >/dev/null 2>&1 &
+    fi
+    # Player was started from this YouTube session. Free it with YouTube.
+    pkill -f /opt/minios/minios-player-bar >/dev/null 2>&1 || true
+    pkill -f /usr/local/bin/minios-player-bar >/dev/null 2>&1 || true
+    pkill -x mplayer >/dev/null 2>&1 || true
+    ;;
+  text-browser|minios-text-browser|links)
+    pkill -x links >/dev/null 2>&1 || true
+    rm -f /tmp/minios-tb.ready
+    ;;
+  quick-search|minios-quick-search)
+    pkill -x links >/dev/null 2>&1 || true
+    rm -f /tmp/minios-qs.ready
+    ;;
+  streaming|minios-streaming)
+    if [ -f /tmp/minios-st-play.pid ]; then
+      stpid=$(tr -dc '0-9' </tmp/minios-st-play.pid)
+      if [ -n "$stpid" ]; then
+        kill "$stpid" >/dev/null 2>&1 || true
+      fi
+    fi
+    pkill -f /opt/minios/minios-streaming-play >/dev/null 2>&1 || true
+    pkill -f /usr/local/bin/minios-streaming-play >/dev/null 2>&1 || true
+    pkill -f /opt/minios/minios-streaming-search >/dev/null 2>&1 || true
+    pkill -f /usr/local/bin/minios-streaming-search >/dev/null 2>&1 || true
+    rm -f /tmp/minios-streaming.ready /tmp/minios-st-play.pid /tmp/minios-st-rows.txt
+    ;;
+esac
+
+# Only reap Firefox/FLTube children. Never pkill aterm (Create Swap).
+case "$NAME" in
+  nightly|firefox|minios-firefox|youtube|fltube|minios-youtube|tiktok|minios-tiktok)
+    if [ -n "$APP" ]; then
+      pkill -P "$APP" 2>/dev/null || true
+    fi
+    case "$NAME" in
+      tiktok|minios-tiktok)
+        pkill -f /opt/minios/minios-tiktok-search >/dev/null 2>&1 || true
+        pkill -f /usr/local/bin/minios-tiktok-search >/dev/null 2>&1 || true
+        pkill -f /opt/minios/minios-tiktok-thumbs >/dev/null 2>&1 || true
+        pkill -f /usr/local/bin/minios-tiktok-thumbs >/dev/null 2>&1 || true
+        rm -f /tmp/minios-tt-search.html /tmp/minios-tt-raw.txt /tmp/minios-tt-rows.txt \
+              /tmp/minios-tt-last.txt /tmp/minios-tt-cookies /tmp/minios-tt-reason.txt \
+              /tmp/minios-tt-chunk.html /tmp/minios-tt-oe.json /tmp/minios-tt-thumbs.pid
+        pkill -f /opt/minios/minios-tiktok-play >/dev/null 2>&1 || true
+        rm -rf /tmp/minios-tt-thumbs
+        if ! pgrep -f /opt/minios/minios-player-bar >/dev/null 2>&1 &&
+           ! pgrep -f /usr/local/bin/minios-player-bar >/dev/null 2>&1; then
+          rm -f /tmp/minios-yt-tiktok /tmp/minios-tt-play.pid
+          rm -rf /tmp/minios-tt-dl
+        fi
+        ;;
+    esac
+    ;;
+esac
+stop_loading
+if [ -x /opt/minios/minios-apps ]; then
+  /opt/minios/minios-apps unregister "$NAME" >>/tmp/minios-apps.log 2>&1 || true
+fi
+rm -rf "$LOCKDIR"
+rm -f "$START"
+
+# After any dock app closes: tell the user, reclaim, then they may open
+# another program. New launches wait on /tmp/minios-reclaiming so they
+# are not killed mid-start. CAD / Refresh RAM keep their own menu.
+case "$NAME" in
+  create-swap|minios-create-swap|Create-Swap|CreateSwap|aterm)
+    ;;
+  player|minios-player|minios-player-bar)
+    # Media Player RAM is released when YouTube or TikTok search closes.
+    rm -f /tmp/minios-reclaiming
+    ;;
+  youtube|fltube|minios-youtube|tiktok|minios-tiktok)
+    if [ ! -f /tmp/minios-refreshing ] && auto_reclaim_on; then
+      if [ -x /opt/minios/minios-gui-close ]; then
+        /opt/minios/minios-gui-close "$NAME"
+      elif [ -x /usr/local/bin/minios-gui-close ]; then
+        /usr/local/bin/minios-gui-close "$NAME"
+      else
+        run_close_reclaim "$NAME"
+      fi
+    else
+      rm -f /tmp/minios-reclaiming
+    fi
+    ;;
+  *)
+    if [ ! -f /tmp/minios-refreshing ] && auto_reclaim_on; then
+      run_close_reclaim "$NAME"
+    else
+      if [ -x /opt/minios/minios-appkit ]; then
+        /opt/minios/minios-appkit unload "$NAME" >>/tmp/minios-appkit.log 2>&1 || true
+      fi
+      rm -f /tmp/minios-reclaiming
+    fi
+    ;;
+esac
+exit "$status"

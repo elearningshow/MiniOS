@@ -1,0 +1,81 @@
+#!/bin/sh
+# MiniOS / TinyCore — identify network and machine hardware
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-hwinfo.log
+
+{
+  echo "=========================================="
+  echo "MiniOS hardware report  $(date)"
+  echo "=========================================="
+  echo
+  echo "--- system ---"
+  uname -a
+  [ -f /etc/sysconfig/tcversion ] && cat /etc/sysconfig/tcversion
+  version 2>/dev/null || true
+  echo
+  echo "--- CPU / memory ---"
+  if [ -r /proc/cpuinfo ]; then
+    grep -E 'model name|vendor_id|cpu MHz|flags' /proc/cpuinfo | head -20
+  fi
+  free 2>/dev/null || cat /proc/meminfo | head -8
+  echo
+  echo "--- PCI devices (network-related first) ---"
+  if command -v lspci >/dev/null 2>&1; then
+    echo "All network/wireless class:"
+    lspci 2>/dev/null | grep -iE 'network|ethernet|wireless|wifi|802\.11|wlan' || echo "(no network keyword match)"
+    echo
+    echo "Full lspci:"
+    lspci 2>/dev/null
+  else
+    echo "lspci not found — install pciutils.tcz"
+    echo "sysfs PCI:"
+    ls /sys/bus/pci/devices 2>/dev/null | head -40
+  fi
+  echo
+  echo "--- USB (network dongles) ---"
+  if command -v lsusb >/dev/null 2>&1; then
+    lsusb 2>/dev/null
+  else
+    echo "lsusb not found — install usbutils.tcz"
+    ls /sys/bus/usb/devices 2>/dev/null | head -20
+  fi
+  echo
+  echo "--- network interfaces ---"
+  if command -v ip >/dev/null 2>&1; then
+    ip -br link 2>/dev/null || ip link
+    echo
+    ip -br addr 2>/dev/null || ip addr
+  else
+    ifconfig -a 2>/dev/null || true
+  fi
+  echo
+  echo "--- wireless (iwconfig / iw) ---"
+  if command -v iwconfig >/dev/null 2>&1; then
+    iwconfig 2>/dev/null || echo "iwconfig: no wireless extensions"
+  else
+    echo "iwconfig not available"
+  fi
+  if command -v iw >/dev/null 2>&1; then
+    echo "iw dev:"
+    iw dev 2>/dev/null || true
+  fi
+  echo
+  echo "--- loaded wireless-related modules ---"
+  lsmod 2>/dev/null | grep -iE 'wifi|wlan|80211|ath|iwl|ipw|rtl|ralink|b43|brcm|ssb|cfg80211|mac80211' || echo "(none matching)"
+  echo
+  echo "--- firmware hints (dmesg) ---"
+  dmesg 2>/dev/null | grep -iE 'firmware|wlan|wifi|80211|ath|iwl|ipw|rtl|b43|brcm' | tail -40 || true
+  echo
+  echo "--- recommended next step ---"
+  echo "Run:  minios-wifi     (scan & connect)"
+  echo "Or:   sudo wifi.sh    (TinyCore stock menu)"
+  echo "Log:  $LOG"
+  echo "=========================================="
+} | tee "$LOG"
+
+# If running under X with aterm available, keep window open
+if [ -n "${DISPLAY:-}" ] && [ -t 0 ]; then
+  echo
+  echo -n "Press Enter to close... "
+  read _ans || true
+fi

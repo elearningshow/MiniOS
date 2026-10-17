@@ -1,0 +1,2026 @@
+#!/bin/sh
+# Play ONE TikTok video. The URL must already be
+# https://www.tiktok.com/@user/video/digits.
+# download_tiktok_v141 is the v0.2.141 save: TikWM, then curl.
+# It writes only TikTok progress files and plays with minios-tt-mplayer.
+# save_tiktok_clip is the next try. yt-dlp is only the backup.
+# YouTube's player and progress file are not used.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+URL="$1"
+LOG=/tmp/minios-tiktok-play.log
+DIR=/tmp/minios-tt-dl
+# One playback. A playlist row starts this script while the previous
+# clip is still running. Take that clip's place. Do not exit and leave
+# the row with no picture.
+LOCK=/tmp/minios-tt-oneplay.lock
+tt_take_play_lock() {
+  tt_lock_n=0
+  while [ "$tt_lock_n" -lt 40 ]; do
+    if mkdir "$LOCK" 2>/dev/null; then
+      echo $$ >"$LOCK/pid"
+      echo "play lock $$" >>"$LOG"
+      return 0
+    fi
+    tt_lock_old=$(cat "$LOCK/pid" 2>/dev/null | tr -cd '0-9')
+    tt_lock_hit=0
+    if [ -n "$tt_lock_old" ] && [ "$tt_lock_old" != "$$" ]; then
+      tt_lock_cmd=$(tr '\0' ' ' <"/proc/$tt_lock_old/cmdline" 2>/dev/null || true)
+      case "$tt_lock_cmd" in
+        *minios-tiktok-play*) tt_lock_hit=1 ;;
+      esac
+    fi
+    if [ "$tt_lock_hit" = 1 ]; then
+      echo "play lock stop $tt_lock_old" >>"$LOG"
+      tt_lock_mp=$(cat /tmp/minios-tt-mp.pid 2>/dev/null | tr -cd '0-9')
+      if [ -n "$tt_lock_mp" ]; then
+        tt_lock_mcmd=$(tr '\0' ' ' <"/proc/$tt_lock_mp/cmdline" 2>/dev/null || true)
+        case "$tt_lock_mcmd" in
+          *mplayer*) kill -9 "$tt_lock_mp" 2>/dev/null || true ;;
+        esac
+      fi
+      tt_lock_ff=$(cat /tmp/minios-tt-light.pid 2>/dev/null | tr -cd '0-9')
+      if [ -n "$tt_lock_ff" ]; then
+        kill -9 "$tt_lock_ff" 2>/dev/null || true
+      fi
+      tt_lock_kids=$(cat "/proc/$tt_lock_old/task/$tt_lock_old/children" 2>/dev/null || true)
+      for tt_lock_ch in $tt_lock_kids; do
+        kill -9 "$tt_lock_ch" 2>/dev/null || true
+      done
+      kill -9 "$tt_lock_old" 2>/dev/null || true
+      wait "$tt_lock_old" 2>/dev/null || true
+      rm -rf "$LOCK"
+    elif [ -z "$tt_lock_old" ] || ! kill -0 "$tt_lock_old" 2>/dev/null; then
+      rm -rf "$LOCK"
+    else
+      sleep 0.1
+    fi
+    tt_lock_n=$((tt_lock_n + 1))
+  done
+  echo "play lock failed" >>"$LOG"
+  return 1
+}
+tt_take_play_lock || exit 1
+trap 'rm -rf "$LOCK" /tmp/minios-tt-play.pid /tmp/minios-tt-dl.pid' EXIT
+echo $$ >/tmp/minios-tt-play.pid
+echo $$ >/tmp/minios-tt-dl.pid
+GEN=$(cat /tmp/minios-tt-play-gen 2>/dev/null || echo 0)
+export MINIOS_PLAY_GEN="$GEN"
+export MINIOS_QUEUE_PLAY=1
+{
+  echo "===== tiktok-play $(date -u) ====="
+  echo "url=$URL gen=$GEN"
+} >>"$LOG"
+
+fail() {
+  echo "$1" >>"$LOG"
+  printf '0\n%s\n' "$1" >/tmp/minios-tt-dl.progress
+  echo fail >/tmp/minios-tt-mp.fail
+  rm -rf "$DIR" /tmp/minios-tt-wm
+  rm -f /tmp/minios-tt-play.pid /tmp/minios-tt-dl.pid
+  exit 1
+}
+
+# Words for one total: "1 minute and 20 seconds".
+tt_clock_words() {
+  tt_w_sec=$1
+  [ -n "$tt_w_sec" ] || tt_w_sec=1
+  [ "$tt_w_sec" -lt 1 ] && tt_w_sec=1
+  [ "$tt_w_sec" -gt 356400 ] && tt_w_sec=356400
+  tt_w_h=$((tt_w_sec / 3600))
+  tt_w_m=$(((tt_w_sec % 3600) / 60))
+  tt_w_s=$((tt_w_sec % 60))
+  tt_w_n=0
+  tt_w_a=""
+  tt_w_b=""
+  tt_w_c=""
+  if [ "$tt_w_h" -eq 1 ]; then
+    tt_w_a="1 hour"
+    tt_w_n=1
+  elif [ "$tt_w_h" -gt 1 ]; then
+    tt_w_a="$tt_w_h hours"
+    tt_w_n=1
+  fi
+  if [ "$tt_w_m" -eq 1 ]; then
+    tt_w_n=$((tt_w_n + 1))
+    if [ "$tt_w_n" -eq 1 ]; then tt_w_a="1 minute"; else tt_w_b="1 minute"; fi
+  elif [ "$tt_w_m" -gt 1 ]; then
+    tt_w_n=$((tt_w_n + 1))
+    if [ "$tt_w_n" -eq 1 ]; then tt_w_a="$tt_w_m minutes"; else tt_w_b="$tt_w_m minutes"; fi
+  fi
+  if [ "$tt_w_h" -eq 0 ] && [ "$tt_w_m" -eq 0 ]; then
+    if [ "$tt_w_s" -eq 1 ]; then printf '%s\n' "1 second"; else printf '%s\n' "$tt_w_s seconds"; fi
+    return
+  fi
+  if [ "$tt_w_s" -eq 1 ]; then
+    tt_w_n=$((tt_w_n + 1))
+    if [ "$tt_w_n" -eq 2 ]; then tt_w_b="1 second"; else tt_w_c="1 second"; fi
+  elif [ "$tt_w_s" -gt 0 ]; then
+    tt_w_n=$((tt_w_n + 1))
+    if [ "$tt_w_n" -eq 2 ]; then tt_w_b="$tt_w_s seconds"; else tt_w_c="$tt_w_s seconds"; fi
+  fi
+  if [ "$tt_w_n" -le 1 ]; then
+    printf '%s\n' "$tt_w_a"
+  elif [ "$tt_w_n" -eq 2 ]; then
+    printf '%s and %s\n' "$tt_w_a" "$tt_w_b"
+  else
+    printf '%s, %s and %s\n' "$tt_w_a" "$tt_w_b" "$tt_w_c"
+  fi
+}
+
+# First line on screen: the download has started, plus the clip name.
+tt_paint_first_clock() {
+  tt_idx=$(sed -n '1p' /tmp/minios-tt-playlist 2>/dev/null | tr -cd '0-9')
+  [ -n "$tt_idx" ] || tt_idx=0
+  tt_row=$(sed -n "$((tt_idx + 2))p" /tmp/minios-tt-playlist 2>/dev/null || true)
+  tt_tab=$(printf '\t')
+  tt_rest=${tt_row#*"$tt_tab"}
+  tt_title=${tt_rest%%"$tt_tab"*}
+  tt_title=$(printf '%s' "$tt_title" | tr '\r\n"' "  '")
+  printf '%s' "$tt_title" >/tmp/minios-tt-title
+  printf '0\nDownloading media\n' >/tmp/minios-tt-dl.progress
+}
+
+rm -f /tmp/minios-tt-mp.fail /tmp/minios-tt-mp.reload
+
+if [ -z "$URL" ] || [ "$URL" = "-" ]; then
+  fail "Select a TikTok result first."
+fi
+
+if [ -f /tmp/minios-tt-mp.quit ]; then
+  echo "user quit, not starting" >>"$LOG"
+  rm -f /tmp/minios-tt-play.pid
+  exit 0
+fi
+
+rm -rf "$DIR"
+mkdir -p "$DIR" || fail "Could not create download folder."
+tt_hide_playing_name() {
+  tt_show_pid=$(cat /tmp/minios-tt-now.pid 2>/dev/null || true)
+  if [ -n "$tt_show_pid" ]; then
+    kill "$tt_show_pid" 2>/dev/null || true
+    wait "$tt_show_pid" 2>/dev/null || true
+  fi
+  tt_show_pid=""
+  rm -f /tmp/minios-tt-now.pid
+}
+
+tt_show_playing_name() {
+  tt_show_bin=/opt/minios/minios-tt-now
+  [ -x "$tt_show_bin" ] || tt_show_bin=/usr/local/bin/minios-tt-now
+  if [ ! -x "$tt_show_bin" ]; then
+    echo "tt-now missing" >>"$LOG"
+    return 0
+  fi
+  if [ -f /tmp/minios-tt-now.pid ]; then
+    tt_show_old=$(cat /tmp/minios-tt-now.pid 2>/dev/null || true)
+    if [ -n "$tt_show_old" ] && kill -0 "$tt_show_old" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  "$tt_show_bin" >/tmp/minios-tt-now.log 2>&1 &
+  tt_show_pid=$!
+  echo "$tt_show_pid" >/tmp/minios-tt-now.pid
+  echo "tt-now arm $tt_show_pid" >>"$LOG"
+}
+
+tt_stop_one_pid() {
+  tt_one_pid=$1
+  tt_one_ppid=""
+  [ -n "$tt_one_pid" ] || return 0
+  [ -d "/proc/$tt_one_pid" ] || return 0
+  tt_one_ppid=$(awk '/^PPid:/ { print $2 }' "/proc/$tt_one_pid/status" 2>/dev/null || true)
+  [ "$tt_one_ppid" = "$$" ] || return 0
+  kill -9 "$tt_one_pid" 2>/dev/null || true
+  wait "$tt_one_pid" 2>/dev/null || true
+}
+
+# Close used to leave the picture save running after the window was gone.
+tt_stop_hidden_work() {
+  tt_stop_one_pid "$(cat /tmp/minios-tt-dl.pid 2>/dev/null || true)"
+  tt_stop_one_pid "$(cat /tmp/minios-tt-sync.pid 2>/dev/null || true)"
+  tt_stop_one_pid "$(cat /tmp/minios-tt-light.pid 2>/dev/null || true)"
+  tt_stop_one_pid "$(cat /tmp/minios-tt-now.pid 2>/dev/null || true)"
+  rm -f /tmp/minios-tt-dl.pid /tmp/minios-tt-sync.pid /tmp/minios-tt-light.pid /tmp/minios-tt-now.pid
+}
+
+tt_play_cleanup() {
+  tt_stop_hidden_work
+  rm -f /tmp/minios-tt-sync.mp4 /tmp/minios-tt-sync.meta
+  tt_hide_playing_name
+  rm -rf "$LOCK" /tmp/minios-tt-clock
+  rm -f /tmp/minios-tt-play.pid /tmp/minios-tt-dl.pid /tmp/minios-tt-title /tmp/minios-tt-small.mp4 /tmp/minios-tt-open.mp4
+}
+trap tt_play_cleanup EXIT
+trap 'tt_play_cleanup; exit 0' TERM INT
+
+tt_paint_first_clock
+: >/tmp/minios-tt-flag
+printf 'tiktok\n' >/tmp/minios-tt-player-mode
+
+if [ -x /opt/minios/minios-sound-up ]; then
+  ( sudo -n /opt/minios/minios-sound-up libs-only >>"$LOG" 2>&1 || \
+      /opt/minios/minios-sound-up libs-only >>"$LOG" 2>&1 || true ) &
+fi
+
+PY=""
+if [ -x /usr/local/bin/python3.9 ]; then
+  PY=/usr/local/bin/python3.9
+elif command -v python3.9 >/dev/null 2>&1; then
+  PY=$(command -v python3.9)
+elif command -v python3 >/dev/null 2>&1; then
+  PY=$(command -v python3)
+fi
+[ -n "$PY" ] || fail "Python is not available."
+
+CANON=$("$PY" -c 'import re,sys
+u=sys.argv[1].strip().split("#",1)[0].split("?",1)[0].rstrip("/")
+if u.startswith("http://"):
+    u="https://"+u[7:]
+bad={"photo","tag","music","live","explore","login","discover","search"}
+parts=[p for p in u.lower().split("/") if p]
+if any(p in bad for p in parts):
+    sys.exit(2)
+m=re.match(r"^https://(?:www\.)?tiktok\.com/@([A-Za-z0-9._]+)/video/([0-9]+)$", u, re.I)
+if not m:
+    sys.exit(3)
+sys.stdout.write("https://www.tiktok.com/@%s/video/%s" % (m.group(1), m.group(2)))
+' "$URL") || fail "That is not a TikTok video link."
+URL=$CANON
+echo "canonical=$URL" >>"$LOG"
+
+MP=/opt/minios/minios-tt-mplayer
+[ -x "$MP" ] || MP=/usr/local/bin/minios-tt-mplayer
+[ -x "$MP" ] || fail "TikTok player helper is not available."
+
+find_ffprobe() {
+  for p in /usr/local/bin/ffprobe /tmp/tcloop/ffmpeg4/usr/local/bin/ffprobe \
+           /usr/local/bin/ffmpeg /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg; do
+    if [ -x "$p" ]; then
+      echo "$p"
+      return 0
+    fi
+  done
+  if [ -x /opt/minios/minios-load-tcz ]; then
+    /opt/minios/minios-load-tcz ffmpeg4 >>"$LOG" 2>&1 || true
+  fi
+  for p in /usr/local/bin/ffprobe /tmp/tcloop/ffmpeg4/usr/local/bin/ffprobe \
+           /usr/local/bin/ffmpeg /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg; do
+    if [ -x "$p" ]; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+has_video_stream() {
+  f="$1"
+  [ -s "$f" ] || return 1
+  "$PY" - "$f" <<'PY' || return 1
+import sys
+b = open(sys.argv[1], "rb").read(64).lstrip().lower()
+if b.startswith(b"<") or b.startswith(b"{") or b.startswith(b"<!doc"):
+    sys.exit(1)
+sys.exit(0)
+PY
+  fp=$(find_ffprobe) || {
+    echo "no ffprobe" >>"$LOG"
+    return 1
+  }
+  base=$(basename "$fp")
+  if [ "$base" = ffprobe ]; then
+    kind=$("$fp" -v error -select_streams v:0 -show_entries stream=codec_type -of csv=p=0 "$f" 2>>"$LOG" || true)
+    [ "$kind" = video ]
+    return
+  fi
+  "$fp" -hide_banner -i "$f" 2>&1 | grep -q 'Video:'
+}
+
+pick_video_file() {
+  for f in "$DIR"/video.mp4 "$DIR"/video.mkv "$DIR"/video.webm "$DIR"/video.mov \
+           "$DIR"/video.m4v "$DIR"/video.*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+      *.part|*.ytdl|*.json|*.jpg|*.jpeg|*.png|*.webp) continue ;;
+    esac
+    if has_video_stream "$f"; then
+      echo "$f"
+      return 0
+    fi
+    echo "no video stream $f" >>"$LOG"
+  done
+  return 1
+}
+
+# Own check for this player. A file is playable when it is a complete
+# mp4, the picture is H.264, and the sound is AAC. A web page, a cut-off
+# download, or a picture this computer cannot decode is refused.
+tt_file_can_play() {
+  tt_can_path="$1"
+  [ -n "$tt_can_path" ] && [ -f "$tt_can_path" ] || return 1
+  tt_can_sz=$(wc -c < "$tt_can_path" 2>/dev/null | tr -dc '0-9')
+  echo "tt-file-check size=${tt_can_sz:-0} $tt_can_path" >>"$LOG"
+  if [ "${tt_can_sz:-0}" -lt 8000 ]; then
+    echo "tt-file-check small" >>"$LOG"
+    return 1
+  fi
+  "$PY" - "$tt_can_path" >>"$LOG" 2>&1 <<'PY'
+import sys
+path = sys.argv[1]
+
+def be32(b):
+    return (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
+
+f = open(path, "rb")
+f.seek(0, 2)
+end = f.tell()
+f.seek(0)
+head = f.read(32)
+if head.lstrip()[:1] in (b"<", b"{"):
+    sys.stderr.write("tt-file-check page\n")
+    sys.exit(1)
+if len(head) < 8 or head[4:8] != b"ftyp":
+    sys.stderr.write("tt-file-check no-ftyp\n")
+    sys.exit(1)
+pos = 0
+saw_moov = 0
+saw_mdat = 0
+codecs = []
+while pos + 8 <= end:
+    f.seek(pos)
+    hdr = f.read(8)
+    if len(hdr) < 8:
+        sys.stderr.write("tt-file-check short\n")
+        sys.exit(1)
+    size = be32(hdr[:4])
+    kind = hdr[4:8]
+    header = 8
+    if size == 1:
+        ext = f.read(8)
+        if len(ext) < 8:
+            sys.stderr.write("tt-file-check short\n")
+            sys.exit(1)
+        size = be32(ext[:4]) * 4294967296 + be32(ext[4:8])
+        header = 16
+    elif size == 0:
+        size = end - pos
+    if size < header:
+        sys.stderr.write("tt-file-check bad-size\n")
+        sys.exit(1)
+    box_end = pos + size
+    if box_end > end:
+        sys.stderr.write("tt-file-check cut\n")
+        sys.exit(1)
+    if kind == b"mdat":
+        saw_mdat = 1
+    if kind == b"moov":
+        saw_moov = 1
+        if size > 8 * 1024 * 1024:
+            sys.stderr.write("tt-file-check moov-big\n")
+            sys.exit(1)
+        f.seek(pos + header)
+        blob = f.read(size - header)
+        for tag in (b"avc1", b"avc3", b"hvc1", b"hev1", b"dvh1", b"av01", b"mp4a"):
+            if tag in blob and tag not in codecs:
+                codecs.append(tag)
+    pos = box_end
+f.close()
+if not saw_moov or not saw_mdat:
+    sys.stderr.write("tt-file-check missing-box\n")
+    sys.exit(1)
+has_h264 = (b"avc1" in codecs) or (b"avc3" in codecs)
+has_aac = b"mp4a" in codecs
+bad = [t for t in (b"hvc1", b"hev1", b"dvh1", b"av01") if t in codecs]
+if (not has_h264) or (not has_aac) or bad:
+    sys.stderr.write("tt-file-check codec\n")
+    sys.exit(1)
+sys.stderr.write("tt-file-check ok\n")
+sys.exit(0)
+PY
+}
+
+# Own files and own checks. The saved mp4 must pass tt_file_can_play.
+# ffprobe is not required, and yt-dlp is not started first.
+save_tiktok_clip() {
+  save_dir=/tmp/minios-tt-save
+  save_mp4=$save_dir/clip.mp4
+  save_meta=$save_dir/curl-meta.txt
+  save_ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+  rm -rf "$save_dir"
+  mkdir -p "$save_dir" || return 1
+  printf '10\nSaving TikTok video\n' >/tmp/minios-tt-dl.progress
+  save_url=$("$PY" - "$URL" 2>>"$LOG" <<'PY'
+import json
+import ssl
+import sys
+import urllib.parse
+import urllib.request
+
+page = sys.argv[1]
+api = "https://www.tikwm.com/api/?hd=0&url=" + urllib.parse.quote(page, safe="")
+req = urllib.request.Request(
+    api,
+    headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MiniOS/0.2.160",
+        "Accept": "application/json",
+    },
+)
+ctx = ssl._create_unverified_context()
+try:
+    raw = urllib.request.urlopen(req, timeout=20, context=ctx).read()
+except Exception as e:
+    sys.stderr.write("save api fail %s\n" % e)
+    sys.exit(2)
+try:
+    data = json.loads(raw.decode("utf-8", "replace"))
+except Exception as e:
+    sys.stderr.write("save api json %s\n" % e)
+    sys.exit(3)
+if not isinstance(data, dict) or data.get("code") != 0:
+    sys.stderr.write("save api code\n")
+    sys.exit(4)
+info = data.get("data") or {}
+media = info.get("play") or info.get("wmplay") or ""
+if not media.startswith("http"):
+    sys.stderr.write("save api no file\n")
+    sys.exit(5)
+sys.stdout.write(media)
+PY
+  ) || return 1
+  [ -n "$save_url" ] || return 1
+  echo "save_url=$save_url" >>"$LOG"
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "save curl missing" >>"$LOG"
+    return 1
+  fi
+  curl -L --max-time 90 -A "$save_ua" -o "$save_mp4" \
+    -w "http=%{http_code} type=%{content_type}\n" \
+    "$save_url" >"$save_meta" 2>>"$LOG" || true
+  save_meta_txt=$(cat "$save_meta" 2>/dev/null || true)
+  echo "save curl $save_meta_txt" >>"$LOG"
+  save_code=$(printf '%s' "$save_meta_txt" | sed -n 's/.*http=\([0-9][0-9][0-9]\).*/\1/p')
+  case "$save_code" in
+    200|206) ;;
+    *) echo "save http $save_code" >>"$LOG"; return 1 ;;
+  esac
+  "$PY" - "$save_mp4" <<'PY' || return 1
+import sys
+raw = open(sys.argv[1], "rb").read(64)
+if raw.lstrip()[:1] in (b"<", b"{"):
+    sys.exit(1)
+if b"ftyp" not in raw[:32]:
+    sys.exit(1)
+PY
+  save_sz=$(wc -c < "$save_mp4" 2>/dev/null | tr -dc '0-9')
+  echo "save size=$save_sz" >>"$LOG"
+  if [ "${save_sz:-0}" -lt 8000 ]; then
+    echo "save too small" >>"$LOG"
+    return 1
+  fi
+  if ! tt_file_can_play "$save_mp4"; then
+    echo "save file will not play" >>"$LOG"
+    return 1
+  fi
+  printf '%s\n' "$save_mp4"
+}
+
+run_ytdlp() {
+  py="$1"
+  ytd="$2"
+  [ -n "$py" ] && [ -f "$ytd" ] || return 1
+  echo "ytdlp $py $ytd" >>"$LOG"
+  printf '15\nDownloading TikTok video\n' >/tmp/minios-tt-dl.progress
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 80 "$py" "$ytd" --no-playlist --no-warnings --no-check-certificates \
+      --no-cache-dir --merge-output-format mp4 \
+      -o "$DIR/video.%(ext)s" "$URL" >>"$LOG" 2>&1 || true
+  else
+    "$py" "$ytd" --no-playlist --no-warnings --no-check-certificates \
+      --no-cache-dir --merge-output-format mp4 \
+      -o "$DIR/video.%(ext)s" "$URL" >>"$LOG" 2>&1 || true
+  fi
+  pick_video_file
+}
+
+# v0.2.141 download. Own folder and own variables.
+# A file larger than 8000 bytes is accepted. yt-dlp is not started.
+# The YouTube player is not started.
+download_tiktok_v141() {
+  v141_dir=/tmp/minios-tt-v141
+  v141_mp4=$v141_dir/video.mp4
+  v141_ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+  rm -rf "$v141_dir"
+  mkdir -p "$v141_dir" || return 1
+  printf '5\nFinding TikTok video\n' >/tmp/minios-tt-dl.progress
+  v141_play=$("$PY" - "$URL" 2>>"$LOG" <<'PY'
+import json
+import ssl
+import sys
+import urllib.parse
+import urllib.request
+
+url = sys.argv[1]
+api = "https://www.tikwm.com/api/?hd=0&url=" + urllib.parse.quote(url, safe="")
+req = urllib.request.Request(
+    api,
+    headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MiniOS/0.2.141",
+        "Accept": "application/json",
+    },
+)
+ctx = ssl._create_unverified_context()
+try:
+    raw = urllib.request.urlopen(req, timeout=20, context=ctx).read()
+except Exception as e:
+    sys.stderr.write("v141 api fail %s\n" % e)
+    sys.exit(2)
+try:
+    data = json.loads(raw.decode("utf-8", "replace"))
+except Exception as e:
+    sys.stderr.write("v141 api json %s\n" % e)
+    sys.exit(3)
+if not isinstance(data, dict) or data.get("code") != 0:
+    sys.stderr.write("v141 api code\n")
+    sys.exit(4)
+info = data.get("data") or {}
+media = info.get("play") or info.get("wmplay") or ""
+if not media.startswith("http"):
+    sys.stderr.write("v141 api no file\n")
+    sys.exit(5)
+sys.stdout.write(media)
+PY
+  ) || return 1
+  [ -n "$v141_play" ] || return 1
+  echo "v141_url=$v141_play" >>"$LOG"
+  printf '25\nDownloading TikTok video\n' >/tmp/minios-tt-dl.progress
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "v141 curl missing" >>"$LOG"
+    return 1
+  fi
+  curl -L --max-time 90 -A "$v141_ua" -o "$v141_mp4" "$v141_play" >>"$LOG" 2>&1 || true
+  v141_sz=$(wc -c < "$v141_mp4" 2>/dev/null | tr -dc '0-9')
+  echo "v141 size=$v141_sz" >>"$LOG"
+  if [ "${v141_sz:-0}" -le 8000 ]; then
+    echo "v141 too small" >>"$LOG"
+    return 1
+  fi
+  "$PY" - "$v141_mp4" <<'PY' || return 1
+import sys
+raw = open(sys.argv[1], "rb").read(16)
+if raw.lstrip()[:1] in (b"<", b"{"):
+    sys.exit(1)
+PY
+  if ! tt_file_can_play "$v141_mp4"; then
+    echo "v141 file will not play" >>"$LOG"
+    return 1
+  fi
+  printf '%s\n' "$v141_mp4"
+}
+
+# Own folder. Used only when the first saved file cannot be played.
+# Asks for the watermark file, which is a different address.
+tt_download_wm_file() {
+  wm_dir=/tmp/minios-tt-wm
+  wm_mp4=$wm_dir/video.mp4
+  wm_ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+  rm -rf "$wm_dir"
+  mkdir -p "$wm_dir" || return 1
+  printf '40\nTrying another download\n' >/tmp/minios-tt-dl.progress
+  wm_play=$("$PY" - "$URL" 2>>"$LOG" <<'PY'
+import json
+import ssl
+import sys
+import urllib.parse
+import urllib.request
+
+url = sys.argv[1]
+api = "https://www.tikwm.com/api/?hd=0&url=" + urllib.parse.quote(url, safe="")
+req = urllib.request.Request(
+    api,
+    headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MiniOS/0.2.209",
+        "Accept": "application/json",
+    },
+)
+ctx = ssl._create_unverified_context()
+try:
+    raw = urllib.request.urlopen(req, timeout=20, context=ctx).read()
+except Exception as e:
+    sys.stderr.write("wm api fail %s\n" % e)
+    sys.exit(2)
+try:
+    data = json.loads(raw.decode("utf-8", "replace"))
+except Exception as e:
+    sys.stderr.write("wm api json %s\n" % e)
+    sys.exit(3)
+if not isinstance(data, dict) or data.get("code") != 0:
+    sys.stderr.write("wm api code\n")
+    sys.exit(4)
+info = data.get("data") or {}
+play = info.get("play") or ""
+media = info.get("wmplay") or ""
+if (not isinstance(media, str)) or (not media.startswith("http")):
+    sys.stderr.write("wm api no file\n")
+    sys.exit(5)
+if media == play:
+    sys.stderr.write("wm api same file\n")
+    sys.exit(6)
+sys.stdout.write(media)
+PY
+  ) || return 1
+  [ -n "$wm_play" ] || return 1
+  echo "wm_url=$wm_play" >>"$LOG"
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "wm curl missing" >>"$LOG"
+    return 1
+  fi
+  curl -L --max-time 90 -A "$wm_ua" -o "$wm_mp4" "$wm_play" >>"$LOG" 2>&1 || true
+  if ! tt_file_can_play "$wm_mp4"; then
+    echo "wm file will not play" >>"$LOG"
+    return 1
+  fi
+  printf '%s\n' "$wm_mp4"
+}
+
+# Download the picture and the sound, show the total time, then return the file.
+# The older save functions stay. This one is used first.
+tt_name_windows() {
+  tt_name_text=$1
+  [ -n "$PY" ] || return 0
+  [ -n "$tt_name_text" ] || return 0
+  "$PY" - "$tt_name_text" >>"$LOG" 2>&1 <<'PY' || true
+import ctypes
+import sys
+
+title = sys.argv[1].replace("\t", " ").replace("\n", " ").replace('"', "'").strip()
+if len(title) > 80:
+    title = title[:80]
+if not title:
+    raise SystemExit(0)
+names = (
+    "MiniOS TikTok Player",
+)
+try:
+    x11 = ctypes.CDLL("libX11.so.6")
+except Exception:
+    raise SystemExit(0)
+x11.XOpenDisplay.restype = ctypes.c_void_p
+dpy = x11.XOpenDisplay(None)
+if not dpy:
+    raise SystemExit(0)
+x11.XDefaultRootWindow.restype = ctypes.c_ulong
+x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+x11.XQueryTree.argtypes = [
+    ctypes.c_void_p, ctypes.c_ulong,
+    ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
+    ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)), ctypes.POINTER(ctypes.c_uint),
+]
+x11.XQueryTree.restype = ctypes.c_int
+x11.XFetchName.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_char_p)]
+x11.XFetchName.restype = ctypes.c_int
+x11.XStoreName.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_char_p]
+x11.XFree.argtypes = [ctypes.c_void_p]
+x11.XFlush.argtypes = [ctypes.c_void_p]
+x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+
+def phrase_for(cur):
+    for base in names:
+        if cur == base or cur.startswith(base + " - Now playing"):
+            return '%s - Now playing "%s"' % (base, title)
+    return None
+
+def visit(win, depth):
+    if depth > 6:
+        return
+    got = ctypes.c_char_p()
+    if x11.XFetchName(dpy, win, ctypes.byref(got)) and got.value:
+        cur = got.value.decode("utf-8", "replace")
+        x11.XFree(got)
+        phrase = phrase_for(cur)
+        if phrase:
+            x11.XStoreName(dpy, win, phrase.encode("utf-8", "replace"))
+    root_r = ctypes.c_ulong()
+    parent = ctypes.c_ulong()
+    kids = ctypes.POINTER(ctypes.c_ulong)()
+    nk = ctypes.c_uint()
+    if not x11.XQueryTree(dpy, win, ctypes.byref(root_r), ctypes.byref(parent), ctypes.byref(kids), ctypes.byref(nk)):
+        return
+    n = int(nk.value)
+    for i in range(n):
+        visit(kids[i], depth + 1)
+    if n and kids:
+        x11.XFree(kids)
+
+visit(x11.XDefaultRootWindow(dpy), 0)
+x11.XFlush(dpy)
+x11.XCloseDisplay(dpy)
+PY
+}
+
+# High reads the choice the search window saved. Fit leaves the smaller file.
+tt_mark_hd_request() {
+  tt_hd_flag=$(tr -d ' \r\n' </tmp/minios-tt-quality 2>/dev/null || true)
+  if [ "$tt_hd_flag" = "high" ]; then
+    export MINIOS_TT_HD=1
+    echo "tt-high ask" >>"$LOG"
+  else
+    export MINIOS_TT_HD=0
+  fi
+}
+
+tt_download_with_clock() {
+  tt_clock_dir=/tmp/minios-tt-clock
+  tt_clock_mp4=$tt_clock_dir/video.mp4
+  tt_clock_pid=""
+  rm -rf "$tt_clock_dir"
+  mkdir -p "$tt_clock_dir" || return 1
+  tt_mark_hd_request
+  [ -n "$PY" ] || return 1
+  if [ -s /tmp/minios-tt-title ]; then
+    tt_name_windows "$(tr -d '\r\n' </tmp/minios-tt-title)"
+  fi
+  "$PY" - "$URL" "$tt_clock_mp4" >>"$LOG" 2>&1 <<'PY' &
+import json
+import os
+import ssl
+import sys
+import time
+import urllib.parse
+import urllib.request
+
+page = sys.argv[1]
+dest = sys.argv[2]
+prog = "/tmp/minios-tt-dl.progress"
+bps_path = "/tmp/minios-tt-dl.bps"
+quit_path = "/tmp/minios-tt-mp.quit"
+title_path = "/tmp/minios-tt-title"
+
+def clock_phrase(sec):
+    try:
+        sec = int(sec)
+    except Exception:
+        sec = 1
+    if sec < 1:
+        sec = 1
+    if sec > 356400:
+        sec = 356400
+    h = sec // 3600
+    m = (sec % 3600) // 60
+    s = sec % 60
+    words = []
+    if h == 1:
+        words.append("1 hour")
+    elif h > 1:
+        words.append("%d hours" % h)
+    if m == 1:
+        words.append("1 minute")
+    elif m > 1:
+        words.append("%d minutes" % m)
+    if h == 0 and m == 0:
+        if s == 1:
+            words.append("1 second")
+        else:
+            words.append("%d seconds" % s)
+    elif s == 1:
+        words.append("1 second")
+    elif s > 0:
+        words.append("%d seconds" % s)
+    if len(words) == 1:
+        return words[0]
+    if len(words) == 2:
+        return "%s and %s" % (words[0], words[1])
+    return "%s, %s and %s" % (words[0], words[1], words[2])
+
+def fit_line(phrase, title):
+    line = phrase
+    if len(line) > 46:
+        line = line[:46]
+    return line
+
+def write_prog(pct, label):
+    try:
+        pct = int(pct)
+    except Exception:
+        pct = 0
+    if pct < 0:
+        pct = 0
+    if pct > 100:
+        pct = 100
+    tmp = prog + ".tmp"
+    f = open(tmp, "w")
+    f.write("%d\n%s\n" % (pct, label))
+    f.close()
+    os.rename(tmp, prog)
+
+def stopped():
+    return os.path.isfile(quit_path)
+
+title = ""
+try:
+    lines = open("/tmp/minios-tt-playlist").read().splitlines()
+except Exception:
+    lines = []
+idx = 0
+try:
+    idx = int((lines[0] if lines else "0").strip() or "0")
+except Exception:
+    idx = 0
+if idx >= 0 and len(lines) > idx + 1:
+    parts = lines[idx + 1].split("\t")
+    if len(parts) > 1:
+        title = parts[1].strip()
+for row in lines[1:]:
+    parts = row.split("\t")
+    if len(parts) > 1 and parts[0] == page and parts[1].strip():
+        title = parts[1].strip()
+        break
+title = title.replace("\t", " ").replace("\n", " ").replace('"', "'")
+try:
+    open(title_path, "w").write(title)
+except Exception:
+    pass
+try:
+    speed = float(open(bps_path).read().strip())
+except Exception:
+    speed = 200000.0
+if speed < 8000:
+    speed = 200000.0
+size = 8000000
+
+def show(done, total):
+    remain = total - done
+    if remain < 0:
+        remain = 0
+    sec = int(remain / speed) if speed > 0 else 1
+    if remain > 0 and sec < 1:
+        sec = 1
+    if remain <= 0:
+        sec = 1
+    pct = 0
+    if total > 0:
+        pct = int(done * 100 / total)
+        if pct > 99 and done < total:
+            pct = 99
+        if pct > 100:
+            pct = 100
+    write_prog(pct, "Downloading media")
+
+show(0, size)
+hd = os.environ.get("MINIOS_TT_HD", "0")
+if hd != "1":
+    hd = "0"
+api = "https://www.tikwm.com/api/?hd=" + hd + "&url=" + urllib.parse.quote(page, safe="")
+req = urllib.request.Request(
+    api,
+    headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MiniOS/0.2.218",
+        "Accept": "application/json",
+    },
+)
+ctx = ssl._create_unverified_context()
+try:
+    raw = urllib.request.urlopen(req, timeout=20, context=ctx).read()
+    data = json.loads(raw.decode("utf-8", "replace"))
+except Exception as e:
+    sys.stderr.write("tt-clock api %s\n" % e)
+    sys.exit(1)
+if not isinstance(data, dict) or data.get("code") != 0:
+    sys.stderr.write("tt-clock api code\n")
+    sys.exit(1)
+info = data.get("data") or {}
+if not isinstance(info, dict):
+    sys.exit(1)
+if hd == "1":
+    media = info.get("hdplay") or info.get("play") or info.get("wmplay") or ""
+else:
+    media = info.get("play") or info.get("wmplay") or ""
+if not isinstance(media, str) or not media.startswith("http"):
+    sys.stderr.write("tt-clock no file\n")
+    sys.exit(1)
+got_title = info.get("title") or ""
+if isinstance(got_title, str) and got_title.strip():
+    title = got_title.strip()
+title = title.replace("\t", " ").replace("\n", " ").replace('"', "'")
+try:
+    open(title_path, "w").write(title)
+except Exception:
+    pass
+try:
+    size = int(info.get("size") or 0)
+except Exception:
+    size = 0
+try:
+    dur = int(float(info.get("duration") or 0))
+except Exception:
+    dur = 0
+if size < 8000 and dur > 0:
+    size = dur * 125000
+if size < 8000:
+    size = 8000000
+show(0, size)
+try:
+    req = urllib.request.Request(
+        media,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MiniOS/0.2.218"},
+    )
+    resp = urllib.request.urlopen(req, timeout=30, context=ctx)
+except Exception as e:
+    sys.stderr.write("tt-clock open %s\n" % e)
+    sys.exit(1)
+cl = resp.headers.get("Content-Length")
+if cl and str(cl).isdigit() and int(cl) > 8000:
+    size = int(cl)
+    show(0, size)
+out = open(dest, "wb")
+done = 0
+t0 = time.time()
+last = 0
+while True:
+    if stopped():
+        out.close()
+        try:
+            os.remove(dest)
+        except Exception:
+            pass
+        sys.exit(2)
+    chunk = resp.read(65536)
+    if not chunk:
+        break
+    out.write(chunk)
+    done += len(chunk)
+    now = time.time()
+    if now - last >= 0.4:
+        elapsed = now - t0
+        if elapsed >= 0.3 and done > 0:
+            inst = done / elapsed
+            speed = inst if speed <= 0 else (speed * 0.4 + inst * 0.6)
+            try:
+                open(bps_path, "w").write("%d\n" % int(speed))
+            except Exception:
+                pass
+        show(done, size if size > done else done)
+        last = now
+out.close()
+if done < 8000:
+    sys.stderr.write("tt-clock short %s\n" % done)
+    sys.exit(1)
+show(done, done if done > 0 else 1)
+sys.stderr.write("tt-clock saved %s bytes title=%s\n" % (done, title))
+PY
+  tt_clock_pid=$!
+  tt_named=""
+  echo "$tt_clock_pid" >/tmp/minios-tt-dl.pid
+  while kill -0 "$tt_clock_pid" 2>/dev/null; do
+    if [ -z "$tt_named" ] && [ -s /tmp/minios-tt-title ]; then
+      tt_name_windows "$(tr -d '\r\n' </tmp/minios-tt-title)"
+      tt_named=1
+    fi
+    if [ -f /tmp/minios-tt-mp.quit ]; then
+      kill "$tt_clock_pid" 2>/dev/null || true
+      sleep 0.2
+      kill -9 "$tt_clock_pid" 2>/dev/null || true
+      break
+    fi
+    sleep 0.25
+  done
+  wait "$tt_clock_pid" 2>/dev/null
+  tt_clock_rc=$?
+  tt_clock_pid=""
+  if [ -f /tmp/minios-tt-mp.quit ]; then
+    rm -rf "$tt_clock_dir"
+    echo "tt-clock quit" >>"$LOG"
+    return 1
+  fi
+  if [ "$tt_clock_rc" -ne 0 ] || [ ! -f "$tt_clock_mp4" ]; then
+    rm -rf "$tt_clock_dir"
+    echo "tt-clock miss rc=$tt_clock_rc" >>"$LOG"
+    return 1
+  fi
+  if ! tt_file_can_play "$tt_clock_mp4"; then
+    rm -rf "$tt_clock_dir"
+    echo "tt-clock rejected" >>"$LOG"
+    return 1
+  fi
+  echo "tt-clock ok $tt_clock_mp4" >>"$LOG"
+  printf '%s\n' "$tt_clock_mp4"
+}
+
+clip=$(tt_download_with_clock || true)
+if [ -f /tmp/minios-tt-mp.quit ]; then
+  rm -rf /tmp/minios-tt-clock
+  rm -f /tmp/minios-tt-title
+  echo "user quit during download" >>"$LOG"
+  exit 0
+fi
+if [ -z "$clip" ] || [ ! -f "$clip" ]; then
+  clip=$(download_tiktok_v141 || true)
+fi
+if [ -z "$clip" ] || [ ! -f "$clip" ]; then
+  echo "v141 missed, watermark file" >>"$LOG"
+  clip=$(tt_download_wm_file || true)
+fi
+if [ -z "$clip" ] || [ ! -f "$clip" ]; then
+  echo "wm missed, save_tiktok_clip" >>"$LOG"
+  clip=$(save_tiktok_clip || true)
+fi
+if [ -n "$clip" ] && [ -f "$clip" ]; then
+  echo "saved clip=$clip" >>"$LOG"
+else
+  echo "save missed, older download" >>"$LOG"
+  clip=""
+PLAY=""
+if [ -x /usr/local/bin/python3.9 ] && [ -f /opt/minios/bin/yt-dlp-2025.10.14 ]; then
+  PLAY=$(run_ytdlp /usr/local/bin/python3.9 /opt/minios/bin/yt-dlp-2025.10.14 || true)
+elif [ -x /usr/local/bin/python3.9 ] && [ -f /opt/minios/bin/yt-dlp-py39 ]; then
+  PLAY=$(run_ytdlp /usr/local/bin/python3.9 /opt/minios/bin/yt-dlp-py39 || true)
+fi
+if [ -z "$PLAY" ] && [ -x /tmp/minios-py311/python/bin/python3.11 ] && \
+   [ -f /opt/minios/bin/yt-dlp-2026.08.19 ]; then
+  PLAY=$(run_ytdlp /tmp/minios-py311/python/bin/python3.11 /opt/minios/bin/yt-dlp-2026.08.19 || true)
+fi
+
+clip=""
+if [ -n "$PLAY" ] && [ -f "$PLAY" ]; then
+  clip=$PLAY
+  echo "ytdlp file=$clip" >>"$LOG"
+else
+  echo "ytdlp missed, tikwm fallback" >>"$LOG"
+  printf '40\nTrying another download\n' >/tmp/minios-tt-dl.progress
+  MEDIA=$("$PY" - "$URL" <<'PY'
+import json
+import ssl
+import sys
+import urllib.parse
+import urllib.request
+
+url = sys.argv[1]
+api = "https://www.tikwm.com/api/?hd=0&url=" + urllib.parse.quote(url, safe="")
+req = urllib.request.Request(
+    api,
+    headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MiniOS/0.2.160",
+        "Accept": "application/json",
+    },
+)
+ctx = ssl._create_unverified_context()
+try:
+    raw = urllib.request.urlopen(req, timeout=20, context=ctx).read()
+except Exception as e:
+    sys.stderr.write("tikwm fail %s\n" % e)
+    sys.exit(2)
+try:
+    data = json.loads(raw.decode("utf-8", "replace"))
+except Exception as e:
+    sys.stderr.write("tikwm json %s\n" % e)
+    sys.exit(3)
+if not isinstance(data, dict) or data.get("code") != 0:
+    sys.stderr.write("tikwm code %s\n" % (data.get("code") if isinstance(data, dict) else "?"))
+    sys.exit(4)
+info = data.get("data") or {}
+play = info.get("play") or info.get("wmplay") or ""
+if not play.startswith("http"):
+    sys.stderr.write("tikwm no play url\n")
+    sys.exit(5)
+sys.stdout.write(play)
+PY
+  ) || true
+  if [ -z "$MEDIA" ]; then
+    fail "This TikTok link could not be downloaded."
+  fi
+  echo "tikwm_url=$MEDIA" >>"$LOG"
+  if [ -f /tmp/minios-tt-mp.quit ]; then
+    echo "user quit after resolve" >>"$LOG"
+    rm -rf "$DIR"
+    exit 0
+  fi
+  UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+  rm -f "$DIR/video.mp4" "$DIR/curl-meta.txt"
+  if ! command -v curl >/dev/null 2>&1; then
+    fail "curl is not available."
+  fi
+  curl -L --max-time 90 -A "$UA" -o "$DIR/video.mp4" \
+    -w "http=%{http_code} type=%{content_type} final=%{url_effective}\n" \
+    "$MEDIA" >"$DIR/curl-meta.txt" 2>>"$LOG" || true
+  meta=$(cat "$DIR/curl-meta.txt" 2>/dev/null || true)
+  echo "curl $meta" >>"$LOG"
+  code=$(printf '%s' "$meta" | sed -n 's/.*http=\([0-9][0-9][0-9]\).*/\1/p')
+  ctype=$(printf '%s' "$meta" | sed -n 's/.*type=\([^ ]*\).*/\1/p' | tr 'A-Z' 'a-z')
+  final=$(printf '%s' "$meta" | sed -n 's/.*final=\(.*\)$/\1/p')
+  case "$code" in
+    200|206) ;;
+    *) fail "The download did not return a video." ;;
+  esac
+  case "$ctype" in
+    video/*|application/mp4|application/octet-stream|binary/octet-stream) ;;
+    "") ;;
+    *) fail "The download was not a video file." ;;
+  esac
+  final_l=$(printf '%s' "$final" | tr 'A-Z' 'a-z')
+  case "$final_l" in
+    *"/login"*|*"/explore"*|*"/photo/"*|*"text/html"*)
+      fail "The download was not a video file."
+      ;;
+  esac
+  sz=$(wc -c < "$DIR/video.mp4" 2>/dev/null | tr -dc '0-9')
+  echo "tikwm size=$sz type=$ctype final=$final" >>"$LOG"
+  if [ "${sz:-0}" -lt 8000 ]; then
+    fail "The download was not a video file."
+  fi
+  if [ -f /tmp/minios-tt-mp.quit ]; then
+    echo "user quit after download" >>"$LOG"
+    rm -rf "$DIR"
+    exit 0
+  fi
+  clip=$(pick_video_file || true)
+fi
+fi
+if [ -z "$clip" ] || [ ! -f "$clip" ]; then
+  fail "Download finished but no video file was saved."
+fi
+if ! tt_file_can_play "$clip"; then
+  echo "saved file will not play" >>"$LOG"
+  fail "Download finished but no video file was saved."
+fi
+
+# Download is finished. A 720 by 1280 picture still falls behind the sound.
+# Make a 240-long-side picture at 24 pictures a second, and keep the sound.
+tt_shrink_picture() {
+  tt_big=$1
+  tt_small=/tmp/minios-tt-small.mp4
+  tt_ff=""
+  tt_ffpid=""
+  tt_long=""
+  rm -f "$tt_small"
+  [ -n "$tt_big" ] && [ -f "$tt_big" ] || return 1
+  tt_long=$("$PY" - "$tt_big" 2>>"$LOG" <<'PY'
+import struct, sys
+data = open(sys.argv[1], "rb").read()
+
+def walk(buf, start, end):
+    i = start
+    best = 0
+    while i + 8 <= end:
+        size = struct.unpack_from(">I", buf, i)[0]
+        typ = buf[i + 4:i + 8]
+        hdr = 8
+        if size == 1 and i + 16 <= end:
+            size = struct.unpack_from(">Q", buf, i + 8)[0]
+            hdr = 16
+        elif size == 0:
+            size = end - i
+        if size < 8 or i + size > end:
+            break
+        if typ == b"tkhd":
+            ver = buf[i + hdr]
+            w = h = 0
+            if ver == 0 and i + hdr + 84 <= i + size:
+                w, h = struct.unpack_from(">II", buf, i + hdr + 76)
+            elif ver == 1 and i + hdr + 96 <= i + size:
+                w, h = struct.unpack_from(">II", buf, i + hdr + 88)
+            w //= 65536
+            h //= 65536
+            if w > best:
+                best = w
+            if h > best:
+                best = h
+        elif typ in (b"moov", b"trak", b"mdia", b"minf", b"stbl"):
+            inner = walk(buf, i + hdr, i + size)
+            if inner > best:
+                best = inner
+        i += size
+    return best
+
+sys.stdout.write("%s\n" % walk(data, 0, len(data)))
+PY
+)
+  echo "tt-shrink long=$tt_long" >>"$LOG"
+  if [ -n "$tt_long" ] && [ "$tt_long" -ge 1 ] && [ "$tt_long" -le 240 ]; then
+    echo "tt-shrink already small" >>"$LOG"
+    return 1
+  fi
+  for tt_p in /usr/local/bin/ffmpeg /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg; do
+    if [ -x "$tt_p" ]; then
+      tt_ff=$tt_p
+      break
+    fi
+  done
+  if [ -z "$tt_ff" ] && [ -x /opt/minios/minios-load-tcz ]; then
+    /opt/minios/minios-load-tcz ffmpeg4 >>"$LOG" 2>&1 || true
+    for tt_p in /usr/local/bin/ffmpeg /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg; do
+      if [ -x "$tt_p" ]; then
+        tt_ff=$tt_p
+        break
+      fi
+    done
+  fi
+  if [ -z "$tt_ff" ]; then
+    echo "tt-shrink no ffmpeg" >>"$LOG"
+    return 1
+  fi
+  printf '0\nPreparing file\n' >/tmp/minios-tt-dl.progress
+  echo "tt-shrink start $tt_ff" >>"$LOG"
+  "$tt_ff" -y -i "$tt_big" \
+    -vf "scale=w='if(gt(iw,ih),240,-2)':h='if(gt(iw,ih),-2,240)',fps=24" \
+    -c:v libx264 -preset ultrafast -profile:v baseline -level 3.0 -crf 28 \
+    -c:a copy -movflags +faststart "$tt_small" >>"$LOG" 2>&1 &
+  tt_ffpid=$!
+  while kill -0 "$tt_ffpid" 2>/dev/null; do
+    if [ -f /tmp/minios-tt-mp.quit ]; then
+      kill "$tt_ffpid" 2>/dev/null || true
+      sleep 0.2
+      kill -9 "$tt_ffpid" 2>/dev/null || true
+      break
+    fi
+    sleep 0.25
+  done
+  wait "$tt_ffpid" 2>/dev/null
+  tt_ffpid=""
+  if [ -f /tmp/minios-tt-mp.quit ]; then
+    rm -f "$tt_small"
+    echo "tt-shrink quit" >>"$LOG"
+    return 1
+  fi
+  if ! tt_file_can_play "$tt_small"; then
+    rm -f "$tt_small"
+    echo "tt-shrink rejected" >>"$LOG"
+    return 1
+  fi
+  echo "tt-shrink ok $tt_small" >>"$LOG"
+  printf '%s\n' "$tt_small"
+}
+
+# One core cannot show a 720 by 1280 picture in time with the sound.
+# Save a 160-long-side picture at 12 pictures a second, keep the sound,
+# and do not play the large file if that save fails.
+tt_fit_one_core() {
+  tt_fit_big=$1
+  tt_fit_out=/tmp/minios-tt-small.mp4
+  tt_fit_bin=""
+  tt_fit_pid=""
+  rm -f "$tt_fit_out"
+  [ -n "$tt_fit_big" ] && [ -f "$tt_fit_big" ] || return 1
+  for tt_fit_p in /usr/local/bin/ffmpeg /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg; do
+    if [ -x "$tt_fit_p" ]; then
+      tt_fit_bin=$tt_fit_p
+      break
+    fi
+  done
+  if [ -z "$tt_fit_bin" ] && [ -x /opt/minios/minios-load-tcz ]; then
+    /opt/minios/minios-load-tcz ffmpeg4 >>"$LOG" 2>&1 || true
+    for tt_fit_p in /usr/local/bin/ffmpeg /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg; do
+      if [ -x "$tt_fit_p" ]; then
+        tt_fit_bin=$tt_fit_p
+        break
+      fi
+    done
+  fi
+  if [ -z "$tt_fit_bin" ]; then
+    echo "tt-fit no ffmpeg" >>"$LOG"
+    return 1
+  fi
+  printf '0\nPreparing file\n' >/tmp/minios-tt-dl.progress
+  echo "tt-fit start $tt_fit_bin" >>"$LOG"
+  "$tt_fit_bin" -y -threads 1 -i "$tt_fit_big" \
+    -vf "scale=160:160:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=12" \
+    -c:v libx264 -preset ultrafast -profile:v baseline -level 3.0 -crf 30 \
+    -c:a copy -movflags +faststart "$tt_fit_out" >>"$LOG" 2>&1 &
+  tt_fit_pid=$!
+  while kill -0 "$tt_fit_pid" 2>/dev/null; do
+    if [ -f /tmp/minios-tt-mp.quit ]; then
+      kill "$tt_fit_pid" 2>/dev/null || true
+      sleep 0.2
+      kill -9 "$tt_fit_pid" 2>/dev/null || true
+      break
+    fi
+    sleep 0.25
+  done
+  wait "$tt_fit_pid" 2>/dev/null
+  tt_fit_pid=""
+  if [ -f /tmp/minios-tt-mp.quit ]; then
+    rm -f "$tt_fit_out"
+    echo "tt-fit quit" >>"$LOG"
+    return 1
+  fi
+  if tt_file_can_play "$tt_fit_out"; then
+    echo "tt-fit ok $tt_fit_out" >>"$LOG"
+    printf '%s\n' "$tt_fit_out"
+    return 0
+  fi
+  rm -f "$tt_fit_out"
+  echo "tt-fit retry" >>"$LOG"
+  "$tt_fit_bin" -y -threads 1 -i "$tt_fit_big" \
+    -vf "scale=-2:128,fps=8" \
+    -c:v libx264 -preset ultrafast -profile:v baseline -level 3.0 -crf 32 \
+    -c:a aac -ac 2 -ar 44100 -b:a 64k \
+    -movflags +faststart "$tt_fit_out" >>"$LOG" 2>&1 &
+  tt_fit_pid=$!
+  while kill -0 "$tt_fit_pid" 2>/dev/null; do
+    if [ -f /tmp/minios-tt-mp.quit ]; then
+      kill "$tt_fit_pid" 2>/dev/null || true
+      sleep 0.2
+      kill -9 "$tt_fit_pid" 2>/dev/null || true
+      break
+    fi
+    sleep 0.25
+  done
+  wait "$tt_fit_pid" 2>/dev/null
+  tt_fit_pid=""
+  if [ -f /tmp/minios-tt-mp.quit ]; then
+    rm -f "$tt_fit_out"
+    echo "tt-fit quit" >>"$LOG"
+    return 1
+  fi
+  if ! tt_file_can_play "$tt_fit_out"; then
+    rm -f "$tt_fit_out"
+    echo "tt-fit rejected" >>"$LOG"
+    return 1
+  fi
+  echo "tt-fit retry ok $tt_fit_out" >>"$LOG"
+  printf '%s\n' "$tt_fit_out"
+}
+
+# A smaller picture is optional. The file already saved still plays.
+tt_light_file_ok() {
+  tt_light_path=$1
+  [ -n "$tt_light_path" ] && [ -f "$tt_light_path" ] || return 1
+  tt_light_sz=$(wc -c < "$tt_light_path" 2>/dev/null | tr -dc '0-9')
+  if [ "${tt_light_sz:-0}" -lt 8000 ]; then
+    echo "tt-light small ${tt_light_sz:-0}" >>"$LOG"
+    return 1
+  fi
+  "$PY" - "$tt_light_path" >>"$LOG" 2>&1 <<'PY'
+import sys
+path = sys.argv[1]
+
+def be32(b):
+    return (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
+
+f = open(path, "rb")
+f.seek(0, 2)
+end = f.tell()
+f.seek(0)
+head = f.read(12)
+if len(head) < 8 or head[4:8] != b"ftyp":
+    sys.stderr.write("tt-light no-ftyp\n")
+    sys.exit(1)
+pos = 0
+saw_moov = 0
+saw_mdat = 0
+blob = b""
+while pos + 8 <= end:
+    f.seek(pos)
+    hdr = f.read(8)
+    if len(hdr) < 8:
+        break
+    size = be32(hdr[:4])
+    kind = hdr[4:8]
+    header = 8
+    if size == 1:
+        ext = f.read(8)
+        if len(ext) < 8:
+            break
+        size = be32(ext[:4]) * 4294967296 + be32(ext[4:8])
+        header = 16
+    elif size == 0:
+        size = end - pos
+    if size < header or pos + size > end:
+        sys.stderr.write("tt-light cut\n")
+        sys.exit(1)
+    if kind == b"mdat":
+        saw_mdat = 1
+    if kind == b"moov" and size <= 8 * 1024 * 1024:
+        saw_moov = 1
+        f.seek(pos + header)
+        blob = f.read(size - header)
+    pos += size
+f.close()
+if not saw_moov or not saw_mdat:
+    sys.stderr.write("tt-light boxes\n")
+    sys.exit(1)
+has_pic = (b"mp4v" in blob) or (b"avc1" in blob) or (b"avc3" in blob)
+has_aac = b"mp4a" in blob
+if (not has_pic) or (not has_aac):
+    sys.stderr.write("tt-light codec\n")
+    sys.exit(1)
+sys.stderr.write("tt-light ok\n")
+sys.exit(0)
+PY
+}
+
+tt_make_light_file() {
+  tt_light_big=$1
+  tt_light_out=/tmp/minios-tt-small.mp4
+  tt_light_bin=""
+  tt_light_pid=""
+  tt_light_begin=0
+  tt_light_now=0
+  rm -f "$tt_light_out"
+  [ -n "$tt_light_big" ] && [ -f "$tt_light_big" ] || return 1
+  for tt_light_p in /usr/local/bin/ffmpeg /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg; do
+    if [ -x "$tt_light_p" ]; then
+      tt_light_bin=$tt_light_p
+      break
+    fi
+  done
+  if [ -z "$tt_light_bin" ] && [ -x /opt/minios/minios-load-tcz ]; then
+    /opt/minios/minios-load-tcz ffmpeg4 >>"$LOG" 2>&1 || true
+    for tt_light_p in /usr/local/bin/ffmpeg /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg; do
+      if [ -x "$tt_light_p" ]; then
+        tt_light_bin=$tt_light_p
+        break
+      fi
+    done
+  fi
+  if [ -z "$tt_light_bin" ]; then
+    echo "tt-light no ffmpeg" >>"$LOG"
+    return 1
+  fi
+  printf '0\nPreparing file\n' >/tmp/minios-tt-dl.progress
+  echo "tt-light start $tt_light_bin" >>"$LOG"
+  "$tt_light_bin" -y -threads 1 -i "$tt_light_big" \
+    -vf "scale=-2:160,fps=12" \
+    -c:v mpeg4 -q:v 7 -c:a copy -movflags +faststart \
+    "$tt_light_out" >>"$LOG" 2>&1 &
+  tt_light_pid=$!
+  echo "$tt_light_pid" >/tmp/minios-tt-light.pid
+  tt_light_begin=$(date +%s)
+  while kill -0 "$tt_light_pid" 2>/dev/null; do
+    if [ -f /tmp/minios-tt-mp.quit ]; then
+      kill "$tt_light_pid" 2>/dev/null || true
+      sleep 0.2
+      kill -9 "$tt_light_pid" 2>/dev/null || true
+      break
+    fi
+    tt_light_now=$(date +%s)
+    if [ $((tt_light_now - tt_light_begin)) -ge 25 ]; then
+      echo "tt-light time" >>"$LOG"
+      kill "$tt_light_pid" 2>/dev/null || true
+      sleep 0.2
+      kill -9 "$tt_light_pid" 2>/dev/null || true
+      break
+    fi
+    sleep 0.25
+  done
+  wait "$tt_light_pid" 2>/dev/null || true
+  tt_light_pid=""
+  rm -f /tmp/minios-tt-light.pid
+  if [ -f /tmp/minios-tt-mp.quit ]; then
+    rm -f "$tt_light_out"
+    echo "tt-light quit" >>"$LOG"
+    return 1
+  fi
+  if ! tt_light_file_ok "$tt_light_out"; then
+    rm -f "$tt_light_out"
+    echo "tt-light rejected" >>"$LOG"
+    return 1
+  fi
+  echo "tt-light ok $tt_light_out" >>"$LOG"
+  printf '%s\n' "$tt_light_out"
+}
+
+# The picture saver is on the USB. The libraries it needs in order to start
+# were not. Load them before Preparing file, or the saver exits and the
+# screen says the video could not load.
+tt_load_picture_libs() {
+  tt_load_one=""
+  [ -x /opt/minios/minios-load-tcz ] || return 0
+  for tt_load_one in libavresample4 libavfilter4 SDL2 libv4l2 libavdevice4; do
+    /opt/minios/minios-load-tcz "$tt_load_one" >>"$LOG" 2>&1 || true
+  done
+}
+
+# YouTube plays a picture at most 426 by 240. That picture stays with the
+# sound. A 720 by 1280 picture reaches the screen later than the sound.
+# Keep the file's own timing. Open it only when the lengths match and the
+# picture is no larger than the YouTube picture.
+tt_sync_file_ok() {
+  tt_sync_path=$1
+  [ -n "$tt_sync_path" ] && [ -f "$tt_sync_path" ] || return 1
+  tt_sync_sz=$(wc -c < "$tt_sync_path" 2>/dev/null | tr -dc '0-9')
+  if [ "${tt_sync_sz:-0}" -lt 8000 ]; then
+    echo "tt-sync small ${tt_sync_sz:-0}" >>"$LOG"
+    return 1
+  fi
+  "$PY" - "$tt_sync_path" >>"$LOG" 2>&1 <<'PY'
+import sys
+
+def be32(b):
+    return (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
+
+def be64(b):
+    return (be32(b[0:4]) * 4294967296) + be32(b[4:8])
+
+def boxes(buf, start, end):
+    i = start
+    out = []
+    while i + 8 <= end:
+        size = be32(buf[i:i + 4])
+        typ = buf[i + 4:i + 8]
+        hdr = 8
+        if size == 1:
+            if i + 16 > end:
+                break
+            size = be64(buf[i + 8:i + 16])
+            hdr = 16
+        elif size == 0:
+            size = end - i
+        if size < hdr or i + size > end:
+            break
+        out.append((typ, i + hdr, i + size))
+        i += size
+    return out
+
+def child(buf, start, end, want):
+    for typ, a, b in boxes(buf, start, end):
+        if typ == want:
+            return a, b
+    return None
+
+def mdhd_seconds(payload):
+    if len(payload) < 20:
+        return 0.0
+    ver = payload[0]
+    if ver == 0:
+        scale = be32(payload[12:16])
+        dur = be32(payload[16:20])
+    else:
+        if len(payload) < 32:
+            return 0.0
+        scale = be32(payload[20:24])
+        dur = be64(payload[24:32])
+    if scale <= 0:
+        return 0.0
+    return float(dur) / float(scale)
+
+def hdlr_kind(payload):
+    if len(payload) < 12:
+        return b""
+    return payload[8:12]
+
+def tkhd_wh(payload):
+    if not payload:
+        return 0, 0
+    ver = payload[0]
+    off = 76 if ver == 0 else 88
+    if len(payload) < off + 8:
+        return 0, 0
+    w = be32(payload[off:off + 4]) // 65536
+    h = be32(payload[off + 4:off + 8]) // 65536
+    return w, h
+
+def stsd_info(payload):
+    if len(payload) < 16:
+        return b"", 0, 0
+    codec = payload[12:16]
+    w = h = 0
+    if len(payload) >= 44:
+        w = (payload[40] << 8) | payload[41]
+        h = (payload[42] << 8) | payload[43]
+    return codec, w, h
+
+def mvhd_scale(payload):
+    if len(payload) < 20:
+        return 0
+    if payload[0] == 0:
+        return be32(payload[12:16])
+    if len(payload) < 24:
+        return 0
+    return be32(payload[20:24])
+
+def elst_seconds(payload, movie_scale):
+    if len(payload) < 8 or movie_scale <= 0:
+        return 0.0
+    ver = payload[0]
+    n = be32(payload[4:8])
+    if n <= 0 or n > 64:
+        return 0.0
+    total = 0
+    o = 8
+    i = 0
+    while i < n:
+        if ver == 0:
+            if o + 12 > len(payload):
+                return 0.0
+            total += be32(payload[o:o + 4])
+            o += 12
+        else:
+            if o + 20 > len(payload):
+                return 0.0
+            total += be64(payload[o:o + 8])
+            o += 20
+        i += 1
+    return float(total) / float(movie_scale)
+
+def load_moov(path):
+    f = open(path, "rb")
+    f.seek(0, 2)
+    end = f.tell()
+    f.seek(0)
+    head = f.read(12)
+    if len(head) < 8 or head[4:8] != b"ftyp":
+        f.close()
+        return None
+    pos = 0
+    blob = b""
+    saw_mdat = 0
+    while pos + 8 <= end:
+        f.seek(pos)
+        hdr = f.read(8)
+        if len(hdr) < 8:
+            break
+        size = be32(hdr[:4])
+        kind = hdr[4:8]
+        header = 8
+        if size == 1:
+            ext = f.read(8)
+            if len(ext) < 8:
+                break
+            size = be64(ext)
+            header = 16
+        elif size == 0:
+            size = end - pos
+        if size < header or pos + size > end:
+            break
+        if kind == b"mdat":
+            saw_mdat = 1
+        if kind == b"moov" and size <= 8 * 1024 * 1024:
+            f.seek(pos + header)
+            blob = f.read(size - header)
+        pos += size
+    f.close()
+    if (not blob) or (not saw_mdat):
+        return None
+    return blob
+
+path = sys.argv[1]
+blob = load_moov(path)
+if blob is None:
+    sys.stderr.write("tt-sync missing\n")
+    sys.exit(1)
+movie = 0
+mv = child(blob, 0, len(blob), b"mvhd")
+if mv:
+    movie = mvhd_scale(blob[mv[0]:mv[1]])
+video = None
+audio = None
+for typ, a, b in boxes(blob, 0, len(blob)):
+    if typ != b"trak":
+        continue
+    mdia = child(blob, a, b, b"mdia")
+    tkhd = child(blob, a, b, b"tkhd")
+    if not mdia:
+        continue
+    mdhd = child(blob, mdia[0], mdia[1], b"mdhd")
+    hdlr = child(blob, mdia[0], mdia[1], b"hdlr")
+    if not mdhd or not hdlr:
+        continue
+    kind = hdlr_kind(blob[hdlr[0]:hdlr[1]])
+    dur = mdhd_seconds(blob[mdhd[0]:mdhd[1]])
+    edts = child(blob, a, b, b"edts")
+    if edts:
+        elst = child(blob, edts[0], edts[1], b"elst")
+        if elst:
+            shown = elst_seconds(blob[elst[0]:elst[1]], movie)
+            if shown > 0:
+                dur = shown
+    if kind == b"vide" and video is None:
+        w, h = (0, 0)
+        if tkhd:
+            w, h = tkhd_wh(blob[tkhd[0]:tkhd[1]])
+        codec = b""
+        minf = child(blob, mdia[0], mdia[1], b"minf")
+        if minf:
+            stbl = child(blob, minf[0], minf[1], b"stbl")
+            if stbl:
+                stsd = child(blob, stbl[0], stbl[1], b"stsd")
+                if stsd:
+                    codec, sw, sh = stsd_info(blob[stsd[0]:stsd[1]])
+                    if sw > w:
+                        w = sw
+                    if sh > h:
+                        h = sh
+        video = (dur, w, h, codec)
+    elif kind == b"soun" and audio is None:
+        codec = b""
+        minf = child(blob, mdia[0], mdia[1], b"minf")
+        if minf:
+            stbl = child(blob, minf[0], minf[1], b"stbl")
+            if stbl:
+                stsd = child(blob, stbl[0], stbl[1], b"stsd")
+                if stsd:
+                    codec = stsd_info(blob[stsd[0]:stsd[1]])[0]
+        audio = (dur, codec)
+if video is None or audio is None:
+    sys.stderr.write("tt-sync missing\n")
+    sys.exit(1)
+vd, w, h, vc = video
+ad, ac = audio
+try:
+    open("/tmp/minios-tt-sync.meta", "w").write("%d\n" % int(vd + 0.5))
+except Exception:
+    pass
+gap = abs(vd - ad)
+pixels = w * h
+cap = 426 * 240
+why = "ok"
+if vc not in (b"avc1", b"avc3", b"mp4v") or ac != b"mp4a":
+    why = "codec"
+elif vd < 0.20 or ad < 0.20:
+    why = "short"
+elif gap > 0.40:
+    why = "gap"
+elif w < 2 or h < 2 or max(w, h) > 426 or pixels > cap:
+    why = "size"
+sys.stderr.write("tt-sync %s v=%.3f a=%.3f %dx%d\n" % (why, vd, ad, w, h))
+sys.exit(0 if why == "ok" else 1)
+PY
+}
+
+tt_make_sync_file() {
+  tt_sync_big=$1
+  tt_sync_out=/tmp/minios-tt-sync.mp4
+  tt_sync_bin=""
+  tt_sync_pid=""
+  tt_sync_hms=""
+  tt_sync_hh=0
+  tt_sync_mm=0
+  tt_sync_ss=0
+  tt_sync_rest=""
+  tt_sync_full=""
+  tt_sync_now=0
+  tt_sync_pct=0
+  rm -f "$tt_sync_out" /tmp/minios-tt-sync.pid /tmp/minios-tt-sync.meta
+  [ -n "$tt_sync_big" ] && [ -f "$tt_sync_big" ] || return 1
+  if tt_sync_file_ok "$tt_sync_big"; then
+    echo "tt-sync already $tt_sync_big" >>"$LOG"
+    printf '%s\n' "$tt_sync_big"
+    return 0
+  fi
+  for tt_sync_p in /usr/local/bin/ffmpeg /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg; do
+    if [ -x "$tt_sync_p" ]; then
+      tt_sync_bin=$tt_sync_p
+      break
+    fi
+  done
+  if [ -z "$tt_sync_bin" ] && [ -x /opt/minios/minios-load-tcz ]; then
+    /opt/minios/minios-load-tcz ffmpeg4 >>"$LOG" 2>&1 || true
+    for tt_sync_p in /usr/local/bin/ffmpeg /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg; do
+      if [ -x "$tt_sync_p" ]; then
+        tt_sync_bin=$tt_sync_p
+        break
+      fi
+    done
+  fi
+  if [ -z "$tt_sync_bin" ]; then
+    echo "tt-sync no ffmpeg" >>"$LOG"
+    return 1
+  fi
+  tt_load_picture_libs
+  printf '0\nPreparing file\n' >/tmp/minios-tt-dl.progress
+  echo "tt-sync start $tt_sync_bin" >>"$LOG"
+  "$tt_sync_bin" -y -threads 1 -i "$tt_sync_big" \
+    -threads 1 \
+    -vf "scale=w='if(gt(iw,ih),240,-2)':h='if(gt(iw,ih),-2,240)'" \
+    -c:v mpeg4 -q:v 7 -c:a copy -movflags +faststart \
+    "$tt_sync_out" >>"$LOG" 2>&1 &
+  tt_sync_pid=$!
+  echo "$tt_sync_pid" >/tmp/minios-tt-sync.pid
+  while kill -0 "$tt_sync_pid" 2>/dev/null; do
+    if [ -f /tmp/minios-tt-mp.quit ]; then
+      kill "$tt_sync_pid" 2>/dev/null || true
+      sleep 0.2
+      kill -9 "$tt_sync_pid" 2>/dev/null || true
+      break
+    fi
+    tt_sync_hms=$(tail -c 2000 "$LOG" 2>/dev/null | tr '\r' '\n' | sed -n 's/.*time=\([0-9][0-9]:[0-9][0-9]:[0-9][0-9]\).*/\1/p' | tail -n 1)
+    if [ -n "$tt_sync_hms" ]; then
+      tt_sync_hh=${tt_sync_hms%%:*}
+      tt_sync_rest=${tt_sync_hms#*:}
+      tt_sync_mm=${tt_sync_rest%%:*}
+      tt_sync_ss=${tt_sync_rest#*:}
+      tt_sync_hh=${tt_sync_hh#0}
+      tt_sync_hh=${tt_sync_hh#0}
+      tt_sync_mm=${tt_sync_mm#0}
+      tt_sync_mm=${tt_sync_mm#0}
+      tt_sync_ss=${tt_sync_ss#0}
+      tt_sync_ss=${tt_sync_ss#0}
+      [ -n "$tt_sync_hh" ] || tt_sync_hh=0
+      [ -n "$tt_sync_mm" ] || tt_sync_mm=0
+      [ -n "$tt_sync_ss" ] || tt_sync_ss=0
+      tt_sync_full=$(tr -dc '0-9' </tmp/minios-tt-sync.meta 2>/dev/null || true)
+      if [ -n "$tt_sync_full" ] && [ "$tt_sync_full" -gt 0 ]; then
+        tt_sync_now=$((tt_sync_hh * 3600 + tt_sync_mm * 60 + tt_sync_ss))
+        tt_sync_pct=$((tt_sync_now * 100 / tt_sync_full))
+        if [ "$tt_sync_pct" -gt 99 ]; then
+          tt_sync_pct=99
+        fi
+        printf '%s\nPreparing file\n' "$tt_sync_pct" >/tmp/minios-tt-dl.progress
+      fi
+    fi
+    sleep 1
+  done
+  wait "$tt_sync_pid" 2>/dev/null || true
+  tt_sync_pid=""
+  rm -f /tmp/minios-tt-sync.pid
+  if [ -f /tmp/minios-tt-mp.quit ]; then
+    rm -f "$tt_sync_out" /tmp/minios-tt-sync.meta
+    echo "tt-sync quit" >>"$LOG"
+    return 1
+  fi
+  if tt_sync_file_ok "$tt_sync_out"; then
+    echo "tt-sync ok $tt_sync_out" >>"$LOG"
+    printf '%s\n' "$tt_sync_out"
+    return 0
+  fi
+  rm -f "$tt_sync_out" /tmp/minios-tt-sync.meta
+  echo "tt-sync rejected" >>"$LOG"
+  return 1
+}
+
+# The synced picture is 240 on the long side and looks soft on the screen.
+# A 360-long-side H.264 picture was still slower than the sound.
+# Save a 320-long-side mpeg4 picture, copy the sound, and keep the file's
+# own timing. No reordered pictures, so the picture is not held back.
+tt_make_clear_file() {
+  tt_clear_big=$1
+  tt_clear_out=/tmp/minios-tt-sync.mp4
+  tt_clear_bin=""
+  tt_clear_pid=""
+  tt_clear_hms=""
+  tt_clear_hh=0
+  tt_clear_mm=0
+  tt_clear_ss=0
+  tt_clear_rest=""
+  tt_clear_full=""
+  tt_clear_now=0
+  tt_clear_pct=0
+  rm -f "$tt_clear_out" /tmp/minios-tt-sync.pid /tmp/minios-tt-sync.meta
+  [ -n "$tt_clear_big" ] && [ -f "$tt_clear_big" ] || return 1
+  if tt_sync_file_ok "$tt_clear_big"; then
+    echo "tt-clear already $tt_clear_big" >>"$LOG"
+    printf '%s\n' "$tt_clear_big"
+    return 0
+  fi
+  for tt_clear_p in /usr/local/bin/ffmpeg /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg; do
+    if [ -x "$tt_clear_p" ]; then
+      tt_clear_bin=$tt_clear_p
+      break
+    fi
+  done
+  if [ -z "$tt_clear_bin" ] && [ -x /opt/minios/minios-load-tcz ]; then
+    /opt/minios/minios-load-tcz ffmpeg4 >>"$LOG" 2>&1 || true
+    for tt_clear_p in /usr/local/bin/ffmpeg /tmp/tcloop/ffmpeg4/usr/local/bin/ffmpeg; do
+      if [ -x "$tt_clear_p" ]; then
+        tt_clear_bin=$tt_clear_p
+        break
+      fi
+    done
+  fi
+  if [ -z "$tt_clear_bin" ]; then
+    echo "tt-clear no ffmpeg" >>"$LOG"
+    return 1
+  fi
+  tt_load_picture_libs
+  printf '0\nOptimizing video playback\n' >/tmp/minios-tt-dl.progress
+  echo "tt-clear start $tt_clear_bin" >>"$LOG"
+  "$tt_clear_bin" -y -threads 1 -i "$tt_clear_big" \
+    -threads 1 \
+    -vf "scale=w='if(gt(iw,ih),320,-2)':h='if(gt(iw,ih),-2,320)':flags=lanczos" \
+    -c:v mpeg4 -q:v 3 -bf 0 -c:a copy -movflags +faststart \
+    "$tt_clear_out" >>"$LOG" 2>&1 &
+  tt_clear_pid=$!
+  echo "$tt_clear_pid" >/tmp/minios-tt-sync.pid
+  while kill -0 "$tt_clear_pid" 2>/dev/null; do
+    if [ -f /tmp/minios-tt-mp.quit ]; then
+      kill "$tt_clear_pid" 2>/dev/null || true
+      sleep 0.2
+      kill -9 "$tt_clear_pid" 2>/dev/null || true
+      break
+    fi
+    tt_clear_hms=$(tail -c 2000 "$LOG" 2>/dev/null | tr '\r' '\n' | sed -n 's/.*time=\([0-9][0-9]:[0-9][0-9]:[0-9][0-9]\).*/\1/p' | tail -n 1)
+    if [ -n "$tt_clear_hms" ]; then
+      tt_clear_hh=${tt_clear_hms%%:*}
+      tt_clear_rest=${tt_clear_hms#*:}
+      tt_clear_mm=${tt_clear_rest%%:*}
+      tt_clear_ss=${tt_clear_rest#*:}
+      tt_clear_hh=${tt_clear_hh#0}
+      tt_clear_hh=${tt_clear_hh#0}
+      tt_clear_mm=${tt_clear_mm#0}
+      tt_clear_mm=${tt_clear_mm#0}
+      tt_clear_ss=${tt_clear_ss#0}
+      tt_clear_ss=${tt_clear_ss#0}
+      [ -n "$tt_clear_hh" ] || tt_clear_hh=0
+      [ -n "$tt_clear_mm" ] || tt_clear_mm=0
+      [ -n "$tt_clear_ss" ] || tt_clear_ss=0
+      tt_clear_full=$(tr -dc '0-9' </tmp/minios-tt-sync.meta 2>/dev/null || true)
+      if [ -n "$tt_clear_full" ] && [ "$tt_clear_full" -gt 0 ]; then
+        tt_clear_now=$((tt_clear_hh * 3600 + tt_clear_mm * 60 + tt_clear_ss))
+        tt_clear_pct=$((tt_clear_now * 100 / tt_clear_full))
+        if [ "$tt_clear_pct" -gt 99 ]; then
+          tt_clear_pct=99
+        fi
+        printf '%s\nOptimizing video playback\n' "$tt_clear_pct" >/tmp/minios-tt-dl.progress
+      fi
+    fi
+    sleep 1
+  done
+  wait "$tt_clear_pid" 2>/dev/null || true
+  tt_clear_pid=""
+  rm -f /tmp/minios-tt-sync.pid
+  if [ -f /tmp/minios-tt-mp.quit ]; then
+    rm -f "$tt_clear_out" /tmp/minios-tt-sync.meta
+    echo "tt-clear quit" >>"$LOG"
+    return 1
+  fi
+  if tt_sync_file_ok "$tt_clear_out"; then
+    echo "tt-clear ok $tt_clear_out" >>"$LOG"
+    printf '%s\n' "$tt_clear_out"
+    return 0
+  fi
+  rm -f "$tt_clear_out" /tmp/minios-tt-sync.meta
+  echo "tt-clear rejected" >>"$LOG"
+  return 1
+}
+
+# High keeps the downloaded file when this player can open it.
+# Fit still builds the 320-long-side picture. A high file is larger than
+# 426 on a side, so it must not go through tt_sync_file_ok.
+tt_use_high_file() {
+  tt_high_src=$1
+  tt_high_flag=$(tr -d ' \r\n' </tmp/minios-tt-quality 2>/dev/null || true)
+  [ "$tt_high_flag" = "high" ] || return 1
+  if tt_file_can_play "$tt_high_src"; then
+    echo "tt-high play" >>"$LOG"
+    printf '%s\n' "$tt_high_src"
+    return 0
+  fi
+  echo "tt-high fell back" >>"$LOG"
+  return 1
+}
+
+tt_chosen=$(tt_use_high_file "$clip" || true)
+if [ -z "$tt_chosen" ]; then
+  tt_sync_clip=$(tt_make_clear_file "$clip" || true)
+  if [ -f /tmp/minios-tt-mp.quit ]; then
+    rm -f /tmp/minios-tt-sync.mp4 /tmp/minios-tt-sync.pid /tmp/minios-tt-sync.meta
+    echo "user quit before open" >>"$LOG"
+    exit 0
+  fi
+  if [ -n "$tt_sync_clip" ] && [ -f "$tt_sync_clip" ] && tt_sync_file_ok "$tt_sync_clip"; then
+    tt_chosen=$tt_sync_clip
+  else
+    rm -f /tmp/minios-tt-sync.mp4 /tmp/minios-tt-sync.pid /tmp/minios-tt-sync.meta
+    echo "sync test failed $clip" >>"$LOG"
+    fail "Could not load the video."
+  fi
+fi
+if [ -f /tmp/minios-tt-mp.quit ]; then
+  rm -f /tmp/minios-tt-sync.mp4 /tmp/minios-tt-sync.pid /tmp/minios-tt-sync.meta
+  echo "user quit before open" >>"$LOG"
+  exit 0
+fi
+clip=$tt_chosen
+rm -f /tmp/minios-tt-mp.fail
+echo "play sync $clip" >>"$LOG"
+
+tt_say_opening() {
+  printf '0\nOpening the video\n' >/tmp/minios-tt-dl.progress
+}
+
+# The download folder is removed before the picture starts. Move the
+# file first. This path is not the one the player copies onto the USB.
+tt_keep_open_file() {
+  tt_open_src=$1
+  tt_open_dst=/tmp/minios-tt-open.mp4
+  [ -n "$tt_open_src" ] && [ -f "$tt_open_src" ] || return 1
+  if [ "$tt_open_src" = "$tt_open_dst" ]; then
+    printf '%s\n' "$tt_open_dst"
+    return 0
+  fi
+  rm -f "$tt_open_dst"
+  mv -f "$tt_open_src" "$tt_open_dst" || return 1
+  [ -f "$tt_open_dst" ] || return 1
+  printf '%s\n' "$tt_open_dst"
+}
+
+tt_say_opening
+tt_open_clip=$(tt_keep_open_file "$clip" || true)
+if [ -n "$tt_open_clip" ] && [ -f "$tt_open_clip" ]; then
+  clip=$tt_open_clip
+  echo "play open $clip" >>"$LOG"
+  rm -rf /tmp/minios-tt-save /tmp/minios-tt-v141 /tmp/minios-tt-wm /tmp/minios-tt-clock
+else
+  echo "play keep failed $clip" >>"$LOG"
+fi
+rm -f /tmp/minios-ttplay.mp4
+if [ -s /tmp/minios-tt-title ]; then
+  tt_name_windows "$(tr -d '\r\n' </tmp/minios-tt-title)"
+fi
+echo "play $clip" >>"$LOG"
+"$MP" "$clip" >>"$LOG" 2>&1 || true
+rm -f /tmp/minios-tt-small.mp4 /tmp/minios-tt-open.mp4 /tmp/minios-tt-sync.mp4 /tmp/minios-tt-sync.meta /tmp/minios-tt-title
+rm -rf "$DIR"
+rm -f /tmp/minios-tt-play.pid /tmp/minios-tt-dl.pid
+# Keep /tmp/minios-tt-flag so Next/Previous stay in this playlist.
+exit 0

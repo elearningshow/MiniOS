@@ -1,0 +1,197 @@
+#!/bin/sh
+# TikTok-only mplayer helper. Never starts YouTube minios-player-bar.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+trap '' HUP
+LOG=/tmp/minios-tt-mplayer.log
+FILE="$1"
+{
+  echo "===== tt-mplayer $(date -u) ====="
+  echo "file=$FILE"
+} >>"$LOG"
+[ -n "$FILE" ] || exit 1
+REAL=""
+for p in /tmp/tcloop/mplayer-cli/usr/local/bin/mplayer /usr/local/bin/mplayer; do
+  [ -x "$p" ] || continue
+  REAL=$p
+  break
+done
+command -v mplayer >/dev/null 2>&1 && REAL=$(command -v mplayer)
+[ -n "$REAL" ] || { echo "no mplayer" >>"$LOG"; exit 1; }
+rm -f /tmp/minios-tt-mp.cmd /tmp/minios-tt-mp.fwd /tmp/minios-tt-mp.out /tmp/minios-tt-mp.fail /tmp/minios-tt-fwd.pid
+mkfifo /tmp/minios-tt-mp.cmd 2>/dev/null || true
+: >/tmp/minios-tt-mp.out
+exec 3<>/tmp/minios-tt-mp.cmd
+geom=""
+[ -s /tmp/minios-tt-mp.geom ] && geom=$(head -1 /tmp/minios-tt-mp.geom)
+GEOARG="-fs"
+[ -n "$geom" ] && GEOARG="-geometry $geom -noborder"
+echo "exec $REAL $FILE" >>"$LOG"
+
+# Use the same file reader the YouTube player uses. Forcing a frame
+# rate made the picture finish while the sound kept going. Skipping
+# pictures made the picture run ahead, or finish first. The picture
+# stays small so this one core can decode it. The sound stays at
+# normal speed.
+tt_picture_started() {
+  grep -q 'Starting playback' /tmp/minios-tt-mp.out 2>/dev/null && return 0
+  grep -q 'VO: \[x11\]' /tmp/minios-tt-mp.out 2>/dev/null && return 0
+  return 1
+}
+
+# Close writes the quit file, then the player asks the picture to stop.
+# That stop can sit in the sound chip while pictures already decoded
+# are still on screen. This watcher is a separate program, so closing
+# the play script does not remove it, and it stops the recorded pid.
+tt_arm_close_kill() {
+  tt_guard_pid=""
+  tt_guard_bin=/opt/minios/minios-tt-guard
+  [ -x "$tt_guard_bin" ] || tt_guard_bin=/usr/local/bin/minios-tt-guard
+  if [ ! -x "$tt_guard_bin" ]; then
+    echo "tt-guard missing" >>"$LOG"
+    return 0
+  fi
+  "$tt_guard_bin" /tmp/minios-tt-mp.pid >>"$LOG" 2>&1 &
+  tt_guard_pid=$!
+  echo "$tt_guard_pid" >/tmp/minios-tt-guard.pid
+  echo "tt-guard arm $tt_guard_pid" >>"$LOG"
+}
+
+tt_disarm_close_kill() {
+  if [ -n "${tt_guard_pid:-}" ]; then
+    kill "$tt_guard_pid" 2>/dev/null || true
+    wait "$tt_guard_pid" 2>/dev/null || true
+  fi
+  tt_guard_pid=""
+  rm -f /tmp/minios-tt-guard.pid
+}
+
+# Stop is part of play. Close writes the quit file. This kills the recorded
+# pid, notes once that the picture is up, waits, then removes that pid file.
+tt_stop_when_closed() {
+  tt_noted=0
+  tt_wait=0
+  if [ -z "${mpid:-}" ]; then
+    echo "tt-pace no player" >>"$LOG"
+    return 0
+  fi
+  while kill -0 "$mpid" 2>/dev/null; do
+    if [ -f /tmp/minios-tt-mp.quit ]; then
+      kill -9 "$mpid" 2>/dev/null || true
+      echo "tt-pace close" >>"$LOG"
+      break
+    fi
+    if [ "$tt_noted" = 0 ] && tt_picture_started; then
+      : >/tmp/minios-tt-picture.up
+      tt_noted=1
+      echo "tt-pace picture up" >>"$LOG"
+    fi
+    sleep 0.25
+  done
+  wait "$mpid" 2>/dev/null
+  tt_wait=$?
+  # The search window still reads the quit file and the picture flag.
+  # This file is only the pid. Remove it once that pid has been waited on.
+  tt_rec=$(cat /tmp/minios-tt-mp.pid 2>/dev/null || true)
+  if [ -n "$mpid" ] && [ "$tt_rec" = "$mpid" ]; then
+    rm -f /tmp/minios-tt-mp.pid
+    echo "tt-pace pid cleared" >>"$LOG"
+  fi
+  mpid=""
+  return 0
+}
+
+# Starts the player, records the pid, and does not return until that pid
+# has been waited on. A quit file already present means Close won.
+# The command pipe is the one a Search video used when the picture started.
+tt_play_picture_with_sound() {
+  tt_wait=0
+  mpid=""
+  if [ -f /tmp/minios-tt-mp.quit ]; then
+    echo "tt-pace already closed" >>"$LOG"
+    return 0
+  fi
+  rm -f /tmp/minios-tt-picture.up
+  echo "tt-pace same-reader-as-youtube" >>"$LOG"
+  "$REAL" -slave -quiet -input file=/tmp/minios-tt-mp.cmd $GEOARG -zoom \
+    -vo x11 -ao alsa,oss,null -osdlevel 1 \
+    -demuxer lavf \
+    -lavdopts lowres=1:fast:skiploopfilter=all \
+    -softvol -softvol-max 100 "$FILE" >>/tmp/minios-tt-mp.out 2>&1 &
+  mpid=$!
+  echo "$mpid" >/tmp/minios-tt-mp.pid
+  tt_arm_close_kill
+  tt_stop_when_closed
+  tt_disarm_close_kill
+}
+
+# Same file and same reader. The half-size line above is not called.
+# Showing the saved picture at its real size is what makes it clearer.
+tt_play_sharp_picture() {
+  tt_wait=0
+  mpid=""
+  if [ -f /tmp/minios-tt-mp.quit ]; then
+    echo "tt-sharp already closed" >>"$LOG"
+    return 0
+  fi
+  rm -f /tmp/minios-tt-picture.up
+  echo "tt-sharp full picture" >>"$LOG"
+  "$REAL" -slave -quiet -input file=/tmp/minios-tt-mp.cmd $GEOARG -zoom \
+    -vo x11 -ao alsa,oss,null -osdlevel 1 \
+    -demuxer lavf \
+    -softvol -softvol-max 100 "$FILE" >>/tmp/minios-tt-mp.out 2>&1 &
+  mpid=$!
+  echo "$mpid" >/tmp/minios-tt-mp.pid
+  tt_arm_close_kill
+  tt_stop_when_closed
+  tt_disarm_close_kill
+}
+
+# Same picture and the same reader. The on-video volume bar and the
+# on-video cache bar stay off, so pause cannot draw a different level
+# or keep a bar moving on the picture. The bar under the picture is
+# the one that shows the level and the position.
+tt_play_quiet_picture() {
+  tt_wait=0
+  mpid=""
+  if [ -f /tmp/minios-tt-mp.quit ]; then
+    echo "tt-quiet already closed" >>"$LOG"
+    return 0
+  fi
+  rm -f /tmp/minios-tt-picture.up
+  echo "tt-quiet picture" >>"$LOG"
+  "$REAL" -slave -quiet -input file=/tmp/minios-tt-mp.cmd $GEOARG -zoom \
+    -vo x11 -ao alsa,oss,null -osdlevel 0 \
+    -demuxer lavf \
+    -softvol -softvol-max 100 "$FILE" >>/tmp/minios-tt-mp.out 2>&1 &
+  mpid=$!
+  echo "$mpid" >/tmp/minios-tt-mp.pid
+  tt_arm_close_kill
+  tt_stop_when_closed
+  tt_disarm_close_kill
+}
+
+tt_play_quiet_picture
+ec=${tt_wait:-0}
+echo "mplayer_exit=$ec" >>"$LOG"
+tt_seen=0
+if tt_picture_started; then
+  tt_seen=1
+  echo "tt-pace picture started" >>"$LOG"
+else
+  echo "tt-pace picture did not start" >>"$LOG"
+  if [ ! -f /tmp/minios-tt-mp.quit ]; then
+    printf '0\nThis video did not start.\n' >/tmp/minios-tt-dl.progress
+  fi
+fi
+# The TikTok bar advances only when this file exists. YouTube is not touched.
+expect="${MINIOS_PLAY_GEN:-}"
+nowgen=$(cat /tmp/minios-tt-play-gen 2>/dev/null || echo 0)
+if [ -z "$expect" ]; then
+  expect=$nowgen
+fi
+if [ "$expect" = "$nowgen" ] && [ ! -f /tmp/minios-tt-mp.quit ]; then
+  printf '%s\n' "$expect" >/tmp/minios-tt-mp.done
+  echo "wrote tt done gen=$expect seen=$tt_seen" >>"$LOG"
+fi
+exit 0

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Create / Enable Swap
+Comment=SWAP-AP-02 Option C: enlarge zram and create a 512 MB internal disk swap file
+Exec=aterm +tr +sb -T CreateSwap -e sudo /usr/local/bin/minios-create-swap
+Icon=/usr/local/share/pixmaps/minios/Xhvm6.png
+X-FullPathIcon=/usr/local/share/pixmaps/minios/Xhvm6.png
+Terminal=false
+Categories=System;Utility;
+StartupNotify=false

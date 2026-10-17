@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Refresh RAM
+Comment=Close stuck user apps and free RAM
+Exec=/usr/local/bin/minios-refresh-ram
+Icon=/usr/local/share/pixmaps/minios/Mcnt2.png
+X-FullPathIcon=/usr/local/share/pixmaps/minios/Mcnt2.png
+Terminal=false
+Categories=System;
+StartupNotify=false

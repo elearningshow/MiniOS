@@ -1,0 +1,207 @@
+#!/bin/sh
+# MiniOS / TinyCore — Wi-Fi scan & connect (wraps proven TinyCore wifi.sh)
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-wifi.log
+export DISPLAY="${DISPLAY:-:0}"
+
+log() { echo "$(date '+%H:%M:%S') $*" | tee -a "$LOG"; }
+
+need_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    if command -v sudo >/dev/null 2>&1; then
+      exec sudo -E "$0" "$@"
+    fi
+    echo "Run as root: sudo minios-wifi"
+    exit 1
+  fi
+}
+
+ensure_tools() {
+  if ! command -v wifi.sh >/dev/null 2>&1; then
+    log "ERROR: wifi.sh missing — wifi.tcz not loaded"
+    exit 1
+  fi
+  if ! command -v iwconfig >/dev/null 2>&1 && ! command -v iw >/dev/null 2>&1; then
+    log "ERROR: no iwconfig/iw — wireless_tools or iw.tcz missing"
+    exit 1
+  fi
+}
+
+bring_modules() {
+  # Best-effort: kernel wireless stack often needs cfg80211/mac80211
+  for m in cfg80211 mac80211; do
+    modprobe "$m" 2>/dev/null || true
+  done
+  # Common drivers for older laptops (safe no-ops if absent)
+  for m in ath5k ath9k ath9k_htc iwlwifi ipw2100 ipw2200 b43 brcmsmac \
+           rt2800usb rt2800pci rt2500usb rtl8187 rtl8192cu rtl8xxxu \
+           zd1211rw mwifiex_sdio; do
+    modprobe "$m" 2>/dev/null || true
+  done
+}
+
+list_ifaces() {
+  echo "--- wireless interfaces ---"
+  if command -v iwconfig >/dev/null 2>&1; then
+    iwconfig 2>/dev/null | awk '/^[a-zA-Z0-9]/{print $1}' | while read -r i; do
+      [ -n "$i" ] && echo "  $i"
+    done
+  fi
+  if command -v iw >/dev/null 2>&1; then
+    iw dev 2>/dev/null | awk '/Interface/{print "  "$2}'
+  fi
+  echo "--- all links ---"
+  if command -v ip >/dev/null 2>&1; then
+    ip link 2>/dev/null || true
+  else
+    ifconfig -a 2>/dev/null | head -40
+  fi
+}
+
+scan_only() {
+  WIFI=""
+  if command -v iwconfig >/dev/null 2>&1; then
+    WIFI="$(iwconfig 2>/dev/null | awk '{if (NR==1) print $1}')"
+  fi
+  if [ -z "$WIFI" ] && command -v iw >/dev/null 2>&1; then
+    WIFI="$(iw dev 2>/dev/null | awk '/Interface/{print $2; exit}')"
+  fi
+  if [ -z "$WIFI" ]; then
+    log "No wireless interface found. Run minios-hwinfo and check firmware."
+    list_ifaces
+    return 1
+  fi
+  log "Scanning on $WIFI ..."
+  ifconfig "$WIFI" up 2>/dev/null || ip link set "$WIFI" up 2>/dev/null || true
+  sleep 1
+  if command -v iwlist >/dev/null 2>&1; then
+    iwlist "$WIFI" scanning 2>/dev/null | awk '
+      /Cell |ESSID:|Quality|Encryption|IE: IEEE 802.11i|Authentication/ {
+        print
+      }'
+  elif command -v iw >/dev/null 2>&1; then
+    iw dev "$WIFI" scan 2>/dev/null | awk '
+      /BSS |SSID:|signal:|capability:|RSN:|WPA:/ {print}
+    '
+  else
+    log "No scan tool"
+    return 1
+  fi
+}
+
+wired_dhcp() {
+  # First non-loopback ethernet-ish iface
+  DEV=""
+  if command -v ip >/dev/null 2>&1; then
+    DEV="$(ip -o link show 2>/dev/null | awk -F': ' '$2 !~ /lo|wlan|wl/{print $2; exit}')"
+  fi
+  [ -z "$DEV" ] && DEV=eth0
+  log "Trying DHCP on $DEV"
+  ifconfig "$DEV" up 2>/dev/null || ip link set "$DEV" up 2>/dev/null || true
+  if command -v udhcpc >/dev/null 2>&1; then
+    udhcpc -i "$DEV" -n -q 2>&1 | tee -a "$LOG"
+  else
+    log "udhcpc not found"
+    return 1
+  fi
+  if command -v ip >/dev/null 2>&1; then
+    ip -br addr show "$DEV" 2>/dev/null || ip addr show "$DEV"
+  else
+    ifconfig "$DEV"
+  fi
+}
+
+status() {
+  echo "=== MiniOS network status ==="
+  list_ifaces
+  echo
+  if command -v ip >/dev/null 2>&1; then
+    ip addr 2>/dev/null || true
+    echo
+    ip route 2>/dev/null | head -10
+  else
+    ifconfig -a 2>/dev/null
+  fi
+  echo
+  echo "wifi.db (saved networks):"
+  TCUSER="$(cat /etc/sysconfig/tcuser 2>/dev/null || echo tc)"
+  if [ -f /home/"$TCUSER"/wifi.db ]; then
+    # show SSIDs only (not passwords)
+    awk -F'\t' '{print "  saved SSID: "$1}' /home/"$TCUSER"/wifi.db
+  else
+    echo "  (none yet — will be created by wifi.sh)"
+  fi
+  echo
+  ping -c 1 -W 3 8.8.8.8 2>&1 | head -5 || true
+}
+
+menu() {
+  clear 2>/dev/null || true
+  echo "========================================"
+  echo " MiniOS Network"
+  echo "========================================"
+  echo " 1) Hardware report (minios-hwinfo)"
+  echo " 2) List interfaces"
+  echo " 3) Scan Wi-Fi networks only"
+  echo " 4) Connect Wi-Fi (menu — wifi.sh)"
+  echo " 5) Auto-connect saved Wi-Fi (wifi.sh -a)"
+  echo " 6) Wired Ethernet DHCP"
+  echo " 7) Status / ping test"
+  echo " 0) Exit"
+  echo "========================================"
+  echo -n "Choice: "
+  read choice
+  case "$choice" in
+    1) minios-hwinfo ;;
+    2) list_ifaces; echo -n "Enter..."; read _ ;;
+    3) scan_only; echo -n "Enter..."; read _ ;;
+    4)
+      log "Launching wifi.sh menu"
+      wifi.sh 2>&1 | tee -a "$LOG"
+      echo -n "Enter..."; read _
+      ;;
+    5)
+      log "Auto-connect wifi.sh -a"
+      wifi.sh -a 2>&1 | tee -a "$LOG"
+      echo -n "Enter..."; read _
+      ;;
+    6) wired_dhcp; echo -n "Enter..."; read _ ;;
+    7) status; echo -n "Enter..."; read _ ;;
+    0) exit 0 ;;
+    *) echo "Unknown"; sleep 1 ;;
+  esac
+}
+
+# --- main ---
+: >"$LOG"
+need_root "$@"
+ensure_tools
+bring_modules
+
+case "${1:-}" in
+  -h|--help)
+    echo "Usage: minios-wifi [menu|scan|connect|auto|wired|status|hw]"
+    echo "  menu     interactive (default)"
+    echo "  scan     scan SSIDs only"
+    echo "  connect  sudo wifi.sh (interactive AP list)"
+    echo "  auto     sudo wifi.sh -a (saved wifi.db)"
+    echo "  wired    DHCP on first ethernet"
+    echo "  status   show links / route / ping"
+    echo "  hw       minios-hwinfo"
+    exit 0
+    ;;
+  scan) scan_only; exit $? ;;
+  connect) wifi.sh 2>&1 | tee -a "$LOG"; exit $? ;;
+  auto) wifi.sh -a 2>&1 | tee -a "$LOG"; exit $? ;;
+  wired) wired_dhcp; exit $? ;;
+  status) status; exit 0 ;;
+  hw|hwinfo) minios-hwinfo; exit 0 ;;
+  menu|"")
+    while true; do menu; done
+    ;;
+  *)
+    # pass through flags to wifi.sh
+    wifi.sh "$@" 2>&1 | tee -a "$LOG"
+    exit $?
+    ;;
+esac

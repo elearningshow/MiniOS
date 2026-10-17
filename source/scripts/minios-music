@@ -1,0 +1,63 @@
+#!/bin/sh
+# Launch MiniOS Music. Audio only — does not open the video chrome.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+export HOME="${HOME:-/home/tc}"
+LOG=/tmp/minios-music.log
+{
+  echo "===== minios-music $(date -u) ====="
+} >>"$LOG"
+
+if [ -x /opt/minios/minios-sound-up ]; then
+  sudo -n /opt/minios/minios-sound-up libs-only >>"$LOG" 2>&1 || \
+    /opt/minios/minios-sound-up libs-only >>"$LOG" 2>&1 || true
+  if [ ! -e /dev/snd/pcmC0D0p ]; then
+    sudo -n /opt/minios/minios-sound-up >>"$LOG" 2>&1 || \
+      /opt/minios/minios-sound-up >>"$LOG" 2>&1 || true
+  fi
+fi
+
+LD_LIBRARY_PATH="/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+for d in /tmp/tcloop/*/usr/local/lib /tmp/tcloop/*/usr/lib; do
+  [ -d "$d" ] || continue
+  LD_LIBRARY_PATH="$d:$LD_LIBRARY_PATH"
+done
+export LD_LIBRARY_PATH
+
+# Leftover YouTube mplayer holds ALSA and used to block every song
+# with "Close the video player first."
+if pgrep -x mplayer >/dev/null 2>&1; then
+  echo "reclaim leftover mplayer" >>"$LOG"
+  if [ -p /tmp/minios-mp.cmd ]; then
+    ( echo quit > /tmp/minios-mp.cmd ) &
+    qpid=$!
+    sleep 0.2
+    kill "$qpid" 2>/dev/null || true
+  fi
+  pkill -x minios-player-bar 2>/dev/null || true
+  pkill -x mplayer 2>/dev/null || true
+  sleep 0.3
+  pkill -9 -x mplayer 2>/dev/null || true
+fi
+
+for b in \
+  /tmp/tcloop/mplayer-cli/usr/local/bin/mplayer \
+  /usr/local/bin/mplayer \
+  /usr/bin/mplayer
+do
+  if [ -x "$b" ]; then
+    if ! head -1 "$b" 2>/dev/null | grep -q '^#!'; then
+      export MINIOS_MPLAYER="$b"
+      break
+    fi
+  fi
+done
+echo "mplayer=$MINIOS_MPLAYER" >>"$LOG"
+
+BIN=/opt/minios/minios-mp3
+[ -x "$BIN" ] || BIN=/usr/local/bin/minios-mp3
+if [ ! -x "$BIN" ]; then
+  echo "minios-mp3 missing" >>"$LOG"
+  exit 127
+fi
+exec "$BIN"

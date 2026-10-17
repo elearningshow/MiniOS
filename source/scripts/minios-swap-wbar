@@ -1,0 +1,451 @@
+#!/bin/sh
+# SWAP-AP-01: put Create Swap on the Tiny Core wbar dock after the desktop starts.
+# flwm does not show ~/Desktop icons. Hide flag skips this.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export HOME="${HOME:-/home/tc}"
+
+ICONS="${MINIOS_ICONS:-/usr/local/tce.icons}"
+i=0
+while [ ! -f "$ICONS" ] && [ "$i" -lt 30 ]; do
+  sleep 1
+  i=$((i + 1))
+done
+if [ ! -f "$ICONS" ]; then
+  exit 0
+fi
+# The bar starter runs this list, then draws once. A second run leaves the list alone.
+if [ -f /tmp/minios-dock.ready ]; then
+  exit 0
+fi
+if ! mkdir /tmp/minios-dock.lock 2>/dev/null; then
+  exit 0
+fi
+
+append_icon() {
+  needle="$1"
+  icon="$2"
+  title="$3"
+  cmd="$4"
+  grep -q "$needle" "$ICONS" 2>/dev/null && return 0
+  row=/tmp/minios-icon-row
+  {
+    echo "i: $icon"
+    echo "t: $title"
+    echo "$cmd"
+  } >"$row"
+  if [ -w "$ICONS" ]; then
+    cat "$row" >>"$ICONS"
+  else
+    sudo -n tee -a "$ICONS" <"$row" >/dev/null 2>&1 || cat "$row" >>"$ICONS"
+  fi
+  rm -f "$row"
+}
+
+# Swap is created before the desktop. Do not put Create Swap on the dock.
+
+if [ -x /usr/local/bin/minios-firefox ]; then
+  BICON=/usr/local/share/pixmaps/minios/YGSKE.png
+  [ -f "$BICON" ] || BICON=/opt/minios/browser.png
+  append_icon minios-firefox "$BICON" Nightly \
+    'c: exec /usr/local/bin/minios-run nightly -- /usr/local/bin/minios-firefox'
+  # Existing dock label from older images
+  if grep -q 'minios-firefox' "$ICONS" 2>/dev/null; then
+    sed -i 's/^t: Firefox$/t: Nightly/' "$ICONS" 2>/dev/null || true
+  fi
+fi
+
+# Refresh RAM — last item, immediately right of Wi-Fi on this dock
+RICON=/usr/local/share/pixmaps/minios/Mcnt2.png
+[ -f "$RICON" ] || RICON=/opt/minios/refresh-ram.png
+[ -f "$RICON" ] || RICON=/usr/local/share/pixmaps/refresh-ram.png
+if [ -x /usr/local/bin/minios-refresh-ram ]; then
+  append_icon minios-refresh-ram "$RICON" "Refresh RAM" \
+    'c: exec /usr/local/bin/minios-refresh-ram'
+  if grep -q 'minios-refresh-ram' "$ICONS" 2>/dev/null; then
+    sed -i 's#c: exec /usr/local/bin/minios-run refresh-ram -- /usr/local/bin/minios-refresh-ram#c: exec /usr/local/bin/minios-refresh-ram#' \
+      "$ICONS" 2>/dev/null || true
+  fi
+fi
+
+if [ -x /usr/local/bin/minios-text-browser ]; then
+  TBICON=/usr/local/share/pixmaps/minios/0XXRf.png
+  [ -f "$TBICON" ] || TBICON=/opt/minios/browser.png
+  append_icon minios-text-browser "$TBICON" "Text Browser" \
+    'c: exec /usr/local/bin/minios-run minios-text-browser -- /usr/local/bin/minios-text-browser'
+fi
+
+# Media Player opens the MiniOS video player (Add plays local files).
+# One icon only. Older images used minios-player without -bar in the line.
+if [ -x /usr/local/bin/minios-player ] || [ -x /usr/local/bin/minios-player-bar ]; then
+  MICON=/usr/local/share/pixmaps/minios/uJZ9u.png
+  [ -f "$MICON" ] || MICON=/opt/minios/mp3-player.png
+  if ! grep -qE 'minios-player|t: Media Player' "$ICONS" 2>/dev/null; then
+    append_icon minios-player-bar "$MICON" "Media Player" \
+      'c: exec /usr/local/bin/minios-run player -- /usr/local/bin/minios-player'
+  fi
+fi
+
+if [ -x /usr/local/bin/minios-ai ] || [ -x /opt/minios/minios-ai ] || [ "$MINIOS_WBAR_TEST" = 1 ]; then
+  AICON=/opt/minios/ai.png
+  [ -f "$AICON" ] || AICON=/usr/local/share/pixmaps/minios/ai.png
+  [ -f "$AICON" ] || AICON=/opt/minios/browser.png
+  append_icon minios-ai "$AICON" "AI" \
+    'c: exec /usr/local/bin/minios-run ai -- /usr/local/bin/minios-ai-chat'
+fi
+
+if [ -x /usr/local/bin/minios-youtube ]; then
+  YICON=/opt/minios/youtube.png
+  [ -f "$YICON" ] || YICON=/opt/minios/browser.png
+  # BAKE-AP-01 v1.8: player/alsa/python are onboot. Click must not load packages.
+  append_icon minios-youtube "$YICON" YouTube \
+    'c: exec /usr/local/bin/minios-run youtube -- /usr/local/bin/minios-youtube'
+  if grep -q 'minios-youtube' "$ICONS" 2>/dev/null; then
+    sed -i '/minios-youtube/s/--tcz[^ ]* //g; /minios-youtube/s/python3\.9\.tcz //g; /minios-youtube/s/mplayer-cli\.tcz //g' \
+      "$ICONS" 2>/dev/null || true
+  fi
+fi
+
+if [ -x /usr/local/bin/minios-tiktok ]; then
+  TICON=/opt/minios/tiktok.png
+  [ -f "$TICON" ] || TICON=/usr/local/share/pixmaps/minios/tiktok.png
+  [ -f "$TICON" ] || TICON=/opt/minios/youtube.png
+  append_icon minios-tiktok "$TICON" TikTok \
+    'c: exec /usr/local/bin/minios-run tiktok -- /usr/local/bin/minios-tiktok'
+fi
+
+# Same list as YouTube and TikTok. The names are what the pointer shows.
+if [ -f /opt/minios/document.png ]; then
+  append_icon abiword /opt/minios/document.png Document \
+    'c: exec /usr/local/bin/minios-run document --tcz abiword.tcz -- abiword'
+fi
+if [ -f /opt/minios/spreadsheet.png ]; then
+  append_icon gnumeric /opt/minios/spreadsheet.png Spreadsheet \
+    'c: exec /usr/local/bin/minios-run spreadsheet --tcz gnumeric.tcz -- gnumeric'
+fi
+
+if [ -x /usr/local/bin/minios-streaming ] || [ -x /opt/minios/minios-streaming ]; then
+  SICON=/opt/minios/streaming.png
+  [ -f "$SICON" ] || SICON=/usr/local/share/pixmaps/minios/streaming.png
+  [ -f "$SICON" ] || SICON=/opt/minios/youtube.png
+  append_icon minios-streaming "$SICON" Streaming \
+    'c: exec /usr/local/bin/minios-run streaming -- /usr/local/bin/minios-streaming'
+fi
+
+# Wi-Fi is normally added from wifi.desktop. If that row is missing, write the
+# same triple wbar_update would write so AI can sit immediately left of it.
+if ! grep -e 'wifi.sh' -e 'minios-wifi' "$ICONS" >/dev/null 2>&1; then
+  if [ -f /usr/local/share/pixmaps/wifi.png ]; then
+    append_icon 'wifi.sh' /usr/local/share/pixmaps/wifi.png Wifi \
+      'c: exec cliorx sudo wifi.sh'
+  fi
+fi
+
+# Rebuild dock triples so YouTube then TikTok sit together, before Wi-Fi.
+# Only write complete i/t/c rows. Empty rows made wbar drop the TikTok icon.
+place_tiktok_beside_youtube() {
+  [ -f "$ICONS" ] || return 0
+  TICON=/opt/minios/tiktok.png
+  [ -f "$TICON" ] || TICON=/usr/local/share/pixmaps/minios/tiktok.png
+  [ -f "$TICON" ] || TICON=/opt/minios/youtube.png
+  tmp=/tmp/tce.icons.tiktok
+  : >"$tmp"
+  ai_i="i: /opt/minios/ai.png"
+  ai_t="t: AI"
+  ai_c='c: exec /usr/local/bin/minios-run ai -- /usr/local/bin/minios-ai-chat'
+  # Games sits with the other apps, immediately left of AI. AI stays left of Wi-Fi.
+  # Direct exec: minios-games opens its own menu window. Do not wrap minios-run.
+  gm_i="i: /opt/minios/games.png"
+  gm_t="t: Games"
+  gm_c='c: exec /usr/local/bin/minios-games'
+  saw_wifi=0
+  icon=""; title=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      'i: '*) icon=$line ;;
+      't: '*) title=$line ;;
+      'c: '*)
+        if [ -n "$icon" ] && [ -n "$title" ] && [ -n "$line" ]; then
+          case "$line" in
+            *minios-games*)
+              gm_i=$icon; gm_t=$title; gm_c=$line
+              ;;
+            *minios-ai*)
+              ai_i=$icon; ai_t=$title; ai_c=$line
+              ;;
+            *wifi.sh*|*minios-wifi*)
+              saw_wifi=1
+              printf '%s\n%s\n%s\n' "$gm_i" "$gm_t" "$gm_c" >>"$tmp"
+              printf '%s\n%s\n%s\n' "$ai_i" "$ai_t" "$ai_c" >>"$tmp"
+              printf '%s\n%s\n%s\n' "$icon" "$title" "$line" >>"$tmp"
+              ;;
+            *)
+              printf '%s\n%s\n%s\n' "$icon" "$title" "$line" >>"$tmp"
+              ;;
+          esac
+        fi
+        icon=""; title=""
+        ;;
+    esac
+  done < "$ICONS"
+  if [ "$saw_wifi" -eq 0 ]; then
+    printf '%s\n%s\n%s\n' "$gm_i" "$gm_t" "$gm_c" >>"$tmp"
+    printf '%s\n%s\n%s\n' "$ai_i" "$ai_t" "$ai_c" >>"$tmp"
+  fi
+  if ! cmp -s "$tmp" "$ICONS" 2>/dev/null; then
+    sudo cp "$tmp" "$ICONS" 2>/dev/null || cp "$tmp" "$ICONS"
+  fi
+  rm -f "$tmp"
+}
+place_tiktok_beside_youtube
+
+# YouTube, TikTok, Streaming, Document, Spreadsheet. One write, before the bar starts.
+place_streaming_after_tiktok() {
+  [ -f "$ICONS" ] || return 0
+  tmp=/tmp/tce.icons.streaming
+  : >"$tmp"
+  st_i="i: /opt/minios/streaming.png"
+  st_t="t: Streaming"
+  st_c='c: exec /usr/local/bin/minios-run streaming -- /usr/local/bin/minios-streaming'
+  doc_i="i: /opt/minios/document.png"
+  doc_t="t: Document"
+  doc_c='c: exec /usr/local/bin/minios-run document --tcz abiword.tcz -- abiword'
+  ss_i="i: /opt/minios/spreadsheet.png"
+  ss_t="t: Spreadsheet"
+  ss_c='c: exec /usr/local/bin/minios-run spreadsheet --tcz gnumeric.tcz -- gnumeric'
+  saw_tt=0
+  icon=""; title=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      'i: '*) icon=$line ;;
+      't: '*) title=$line ;;
+      'c: '*)
+        if [ -n "$icon" ] && [ -n "$title" ] && [ -n "$line" ]; then
+          case "$line" in
+            *minios-streaming*)
+              st_i=$icon; st_t=$title; st_c=$line
+              ;;
+            *abiword*)
+              doc_i=$icon; doc_t=$title; doc_c=$line
+              ;;
+            *gnumeric*)
+              ss_i=$icon; ss_t=$title; ss_c=$line
+              ;;
+            *minios-tiktok*)
+              saw_tt=1
+              printf '%s\n%s\n%s\n' "$icon" "$title" "$line" >>"$tmp"
+              printf '%s\n%s\n%s\n' "$st_i" "$st_t" "$st_c" >>"$tmp"
+              if [ -f /opt/minios/document.png ]; then
+                printf '%s\n%s\n%s\n' "$doc_i" "$doc_t" "$doc_c" >>"$tmp"
+              fi
+              if [ -f /opt/minios/spreadsheet.png ]; then
+                printf '%s\n%s\n%s\n' "$ss_i" "$ss_t" "$ss_c" >>"$tmp"
+              fi
+              ;;
+            *)
+              printf '%s\n%s\n%s\n' "$icon" "$title" "$line" >>"$tmp"
+              ;;
+          esac
+        fi
+        icon=""; title=""
+        ;;
+    esac
+  done <"$ICONS"
+  if [ "$saw_tt" -eq 0 ]; then
+    printf '%s\n%s\n%s\n' "$st_i" "$st_t" "$st_c" >>"$tmp"
+    if [ -f /opt/minios/document.png ]; then
+      printf '%s\n%s\n%s\n' "$doc_i" "$doc_t" "$doc_c" >>"$tmp"
+    fi
+    if [ -f /opt/minios/spreadsheet.png ]; then
+      printf '%s\n%s\n%s\n' "$ss_i" "$ss_t" "$ss_c" >>"$tmp"
+    fi
+  fi
+  if ! cmp -s "$tmp" "$ICONS" 2>/dev/null; then
+    sudo cp "$tmp" "$ICONS" 2>/dev/null || cp "$tmp" "$ICONS"
+  fi
+  rm -f "$tmp"
+}
+
+# v0.2.250 showed YouTube and TikTok and left Streaming off the bar.
+# Put the tile back when the picture is on the stick, even if the first add was skipped.
+keep_streaming_on_bar() {
+  [ -f "$ICONS" ] || return 0
+  if [ ! -x /usr/local/bin/minios-streaming ] && [ ! -x /opt/minios/minios-streaming ] && [ ! -f /opt/minios/streaming.png ]; then
+    return 0
+  fi
+  if ! grep -q 'minios-streaming' "$ICONS" 2>/dev/null; then
+    SICON=/opt/minios/streaming.png
+    [ -f "$SICON" ] || SICON=/usr/local/share/pixmaps/minios/streaming.png
+    [ -f "$SICON" ] || SICON=/opt/minios/youtube.png
+    append_icon minios-streaming "$SICON" Streaming \
+      'c: exec /usr/local/bin/minios-run streaming -- /usr/local/bin/minios-streaming'
+  fi
+  place_streaming_after_tiktok
+}
+
+# The list is finished, including Streaming. Tell the bar to start once.
+# Do not kill a bar that is already up. That second start is what the user saw.
+start_bar_after_icons() {
+  : >/tmp/minios-dock.ready
+}
+
+# Document and Spreadsheet load when the icon is clicked.
+add_office_icons() {
+  if [ -f /opt/minios/document.png ]; then
+    append_icon abiword /opt/minios/document.png Document \
+      'c: exec /usr/local/bin/minios-run document --tcz abiword.tcz -- abiword'
+  fi
+  if [ -f /opt/minios/spreadsheet.png ]; then
+    append_icon gnumeric /opt/minios/spreadsheet.png Spreadsheet \
+      'c: exec /usr/local/bin/minios-run spreadsheet --tcz gnumeric.tcz -- gnumeric'
+  fi
+}
+
+add_office_icons
+keep_streaming_on_bar
+
+# Paint the desktop once the screen is up. The early try can finish before X exists.
+if [ -x /opt/minios/setbg.sh ]; then
+  DISPLAY=:0 /opt/minios/setbg.sh || true
+fi
+
+# AI is now immediately left of Wi-Fi. Leave every other icon where it was.
+# Do not keep rewriting the list. A later rewrite moved Refresh RAM and Exit.
+if [ "$MINIOS_WBAR_TEST" != 1 ]; then
+  start_bar_after_icons
+  exit 0
+fi
+
+# ICON-LAUNCH wrap: Nightly / YouTube / Refresh RAM only.
+# Never wrap Create Swap, Terminal (aterm), exit, or wbar.
+if [ -f "$ICONS" ]; then
+  tmp=/tmp/tce.icons.wrap
+  while IFS= read -r line; do
+    case "$line" in
+      'c: exec /usr/local/bin/minios-run '*) echo "$line" ;;
+      'c: exec wbar.sh'*) echo "$line" ;;
+      'c: exec /usr/local/bin/wbar.sh'*) echo "$line" ;;
+      'c: exec exittc'*) echo "$line" ;;
+      'c: exec exit'*) echo "$line" ;;
+      'c: exec aterm '*) echo "$line" ;;
+      'c: exec cliorx '*) echo "$line" ;;
+      'c: exec sudo /usr/local/bin/minios-create-swap'*) echo "$line" ;;
+      'c: exec '*)
+        rest=${line#c: exec }
+        case "$rest" in
+          *minios-create-swap*|*aterm*|*minios-refresh-ram*|*minios-games*|*wifi.sh*|*cliorx*)
+            echo "$line"
+            ;;
+          *) echo "c: exec /usr/local/bin/minios-run $rest" ;;
+        esac
+        ;;
+      *) echo "$line" ;;
+    esac
+  done < "$ICONS" > "$tmp"
+  if ! cmp -s "$tmp" "$ICONS" 2>/dev/null; then
+    sudo cp "$tmp" "$ICONS" 2>/dev/null || cp "$tmp" "$ICONS"
+  fi
+  rm -f "$tmp"
+fi
+
+# Point existing dock rows at the circular discs. Drop leftover music and Create Swap.
+if [ -f "$ICONS" ]; then
+  tmp=/tmp/tce.icons.disc
+  icon=""
+  title=""
+  while IFS= read -r line; do
+    case "$line" in
+      'i: '*) icon=${line#i: } ;;
+      't: '*) title=${line#t: } ;;
+      'c: '*)
+        case "$line" in
+          *minios-music*|*minios-create-swap*|*minios-quick-search*)
+            icon=""
+            title=""
+            ;;
+          *)
+            case "$line" in
+              *minios-firefox*) icon=/usr/local/share/pixmaps/minios/YGSKE.png ;;
+              *minios-text-browser*) icon=/usr/local/share/pixmaps/minios/0XXRf.png ;;
+              *minios-refresh-ram*) icon=/usr/local/share/pixmaps/minios/Mcnt2.png ;;
+              *minios-player*) icon=/usr/local/share/pixmaps/minios/uJZ9u.png; title="Media Player" ;;
+              *minios-tiktok*) icon=/opt/minios/tiktok.png ;;
+              *minios-games*) icon=/opt/minios/games.png; title="Games" ;;
+              *minios-ai*) icon=/opt/minios/ai.png ;;
+            esac
+            echo "i: $icon"
+            echo "t: $title"
+            echo "$line"
+            icon=""
+            title=""
+            ;;
+        esac
+        ;;
+      *) echo "$line" ;;
+    esac
+  done < "$ICONS" > "$tmp"
+  if ! cmp -s "$tmp" "$ICONS" 2>/dev/null; then
+    sudo cp "$tmp" "$ICONS" 2>/dev/null || cp "$tmp" "$ICONS"
+  fi
+  rm -f "$tmp"
+fi
+
+# Keep a single Media Player row if an older bake left two.
+if [ -f "$ICONS" ]; then
+  tmp=/tmp/tce.icons.oneplaye
+  seen=0
+  icon=""
+  title=""
+  while IFS= read -r line; do
+    case "$line" in
+      'i: '*) icon=${line#i: } ;;
+      't: '*) title=${line#t: } ;;
+      'c: '*)
+        case "$line" in
+          *minios-player*)
+            if [ "$seen" -eq 0 ]; then
+              echo "i: $icon"
+              echo "t: Media Player"
+              echo "$line"
+              seen=1
+            fi
+            ;;
+          *)
+            echo "i: $icon"
+            echo "t: $title"
+            echo "$line"
+            ;;
+        esac
+        icon=""
+        title=""
+        ;;
+      *) echo "$line" ;;
+    esac
+  done < "$ICONS" > "$tmp"
+  if ! cmp -s "$tmp" "$ICONS" 2>/dev/null; then
+    sudo cp "$tmp" "$ICONS" 2>/dev/null || cp "$tmp" "$ICONS"
+  fi
+  rm -f "$tmp"
+fi
+
+# Older images launched Text Browser with no binary after minios-run.
+if [ -f "$ICONS" ]; then
+  sed -i \
+    -e 's#c: exec /usr/local/bin/minios-run minios-text-browser$#c: exec /usr/local/bin/minios-run minios-text-browser -- /usr/local/bin/minios-text-browser#' \
+    "$ICONS" 2>/dev/null || true
+fi
+
+# Do not add DuckDuckGo HTML to the dock (SEARCH-INPUT-AP-01: Lite / Text Browser).
+
+place_tiktok_beside_youtube
+
+if [ "$MINIOS_WBAR_TEST" = 1 ]; then
+  exit 0
+fi
+
+# The bar waits for this file. Touch it as soon as the AI row is in the list.
+# Do not paint the wallpaper here. That wait kept the menu off the screen.
+: >/tmp/minios-dock.ready
+if [ -x /opt/minios/setbg.sh ]; then
+  DISPLAY="${DISPLAY:-:0}" /opt/minios/setbg.sh >/tmp/minios-setbg-late.log 2>&1 &
+fi
+exit 0

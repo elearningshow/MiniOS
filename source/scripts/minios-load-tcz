@@ -1,0 +1,142 @@
+#!/bin/sh
+# FLT-02: load one OnDemand .tcz from the USB cde/optional store.
+# Uses a full path (tce-load by short name misses cde on this image).
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-load-tcz.log
+
+pkg="$1"
+if [ -z "$pkg" ]; then
+  echo "usage: minios-load-tcz NAME.tcz|NAME" >&2
+  exit 1
+fi
+case "$pkg" in
+  *.tcz) ;;
+  *) pkg="${pkg}.tcz" ;;
+esac
+base=$(echo "$pkg" | sed 's/\.tcz$//')
+
+find_optional() {
+  for d in /mnt/*/cde/optional /mnt/*/tce/optional /cde/optional; do
+    [ -f "$d/$pkg" ] || continue
+    echo "$d"
+    return 0
+  done
+  td=""
+  if [ -L /etc/sysconfig/tcedir ]; then
+    td=$(readlink /etc/sysconfig/tcedir)
+  elif [ -f /etc/sysconfig/tcedir ]; then
+    td=$(cat /etc/sysconfig/tcedir)
+  fi
+  if [ -n "$td" ] && [ -f "$td/optional/$pkg" ]; then
+    echo "$td/optional"
+    return 0
+  fi
+  return 1
+}
+
+already() {
+  # An empty /tmp/tcloop directory is left after umount. That is not a
+  # loaded package. Closing TikTok used to unmount python3.9 and the next
+  # AI Chat skipped the real load.
+  if [ "$base" = "python3.9" ]; then
+    if [ -x /usr/local/bin/python3.9 ] && /usr/local/bin/python3.9 -c 'print(1)' >/dev/null 2>&1; then
+      return 0
+    fi
+    mountpoint -q /tmp/tcloop/python3.9 2>/dev/null && return 0
+    return 1
+  fi
+  if command -v tce-status >/dev/null 2>&1; then
+    tce-status -i 2>/dev/null | grep -qx "$base" && return 0
+  fi
+  mountpoint -q /tmp/tcloop/"$base" 2>/dev/null && return 0
+  return 1
+}
+
+ensure_python3_bins() {
+  [ "$base" = "python3.9" ] || return 0
+  tgz=""
+  if [ -f /usr/local/share/python3.9/files/files.tar.gz ]; then
+    tgz=/usr/local/share/python3.9/files/files.tar.gz
+  elif [ -f /tmp/tcloop/python3.9/usr/local/share/python3.9/files/files.tar.gz ]; then
+    tgz=/tmp/tcloop/python3.9/usr/local/share/python3.9/files/files.tar.gz
+  fi
+  [ -n "$tgz" ] || return 0
+  if [ ! -x /usr/local/bin/python3.9 ]; then
+    if [ -w /usr/local/bin ]; then
+      tar xzf "$tgz" -C / >>"$LOG" 2>&1
+    else
+      sudo -n tar xzf "$tgz" -C / >>"$LOG" 2>&1
+    fi
+  fi
+  if [ -x /usr/local/bin/python3.9 ] && [ ! -x /usr/local/bin/python3 ]; then
+    if [ -w /usr/local/bin ]; then
+      ln -sf python3.9 /usr/local/bin/python3
+    else
+      sudo -n ln -sf python3.9 /usr/local/bin/python3
+    fi
+  fi
+}
+
+echo "minios-load-tcz $pkg $(date)" >>"$LOG"
+if already; then
+  ensure_python3_bins
+  exit 0
+fi
+
+opt=$(find_optional) || {
+  echo "minios-load-tcz: $pkg not on USB" >>"$LOG"
+  exit 1
+}
+
+# Point Tiny Core at the USB store. tcedir must be a SYMLINK, never a file or dir.
+tcedir=$(dirname "$opt")
+if [ -d "$tcedir/optional" ]; then
+  if [ -x /opt/minios/minios-fix-tcedir ]; then
+    /opt/minios/minios-fix-tcedir >>"$LOG" 2>&1 || \
+      sudo /opt/minios/minios-fix-tcedir >>"$LOG" 2>&1 || true
+  elif [ -d /etc/sysconfig/tcedir ] && [ ! -L /etc/sysconfig/tcedir ]; then
+    sudo mv /etc/sysconfig/tcedir /etc/sysconfig/tcedir.bak-dir 2>/dev/null || true
+    sudo ln -sfn "$tcedir" /etc/sysconfig/tcedir 2>/dev/null || \
+      ln -sfn "$tcedir" /etc/sysconfig/tcedir 2>/dev/null || true
+  else
+    sudo ln -sfn "$tcedir" /etc/sysconfig/tcedir 2>/dev/null || \
+      ln -sfn "$tcedir" /etc/sysconfig/tcedir 2>/dev/null || true
+  fi
+fi
+
+if command -v tce-load >/dev/null 2>&1; then
+  tce-load -i "$opt/$pkg" >>"$LOG" 2>&1 && {
+    if [ -x /usr/local/tce.installed/"$base" ]; then
+      sudo /usr/local/tce.installed/"$base" >>"$LOG" 2>&1 || true
+    fi
+    ensure_python3_bins
+    exit 0
+  }
+  echo "minios-load-tcz: tce-load failed $opt/$pkg — loop-mount" >>"$LOG"
+fi
+
+# Offline fallback: mount the squashfs ourselves (no network).
+mkdir -p /tmp/tcloop/"$base"
+if ! mountpoint -q /tmp/tcloop/"$base" 2>/dev/null; then
+  if ! sudo mount -o loop,ro "$opt/$pkg" /tmp/tcloop/"$base" >>"$LOG" 2>&1; then
+    mount -o loop,ro "$opt/$pkg" /tmp/tcloop/"$base" >>"$LOG" 2>&1 || {
+      echo "minios-load-tcz: mount failed $opt/$pkg" >>"$LOG"
+      ensure_python3_bins
+      exit 1
+    }
+  fi
+fi
+# Make binaries visible
+if [ -d /tmp/tcloop/"$base"/usr/local/bin ]; then
+  export PATH="/tmp/tcloop/$base/usr/local/bin:$PATH"
+fi
+if [ -d /tmp/tcloop/"$base"/usr/local/lib ]; then
+  export LD_LIBRARY_PATH="/tmp/tcloop/$base/usr/local/lib:${LD_LIBRARY_PATH:-}"
+fi
+
+if [ -x /usr/local/tce.installed/"$base" ]; then
+  sudo /usr/local/tce.installed/"$base" >>"$LOG" 2>&1 || \
+    /usr/local/tce.installed/"$base" >>"$LOG" 2>&1 || true
+fi
+ensure_python3_bins
+exit 0

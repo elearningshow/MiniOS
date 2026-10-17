@@ -1,0 +1,121 @@
+#!/bin/sh
+# MINIOS-GOAL-01: after the desktop is up —
+#   Wi-Fi if needed, SWAP-AP-02 Option C if swap is still low, then
+#   USB-embedded Firefox ESR 140 (no tce-load).
+# Never runs at boot. Never formats. Never installs MiniOS. Never changes wireless.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+export HOME="${HOME:-/home/tc}"
+URL="https://html.duckduckgo.com/html/"
+LOG=/tmp/minios-ddg.log
+SKIP_SWAP=0
+SKIP_WIFI=0
+
+for a in "$@"; do
+  case "$a" in
+    --skip-swap) SKIP_SWAP=1 ;;
+    --skip-wifi) SKIP_WIFI=1 ;;
+    --url=*) URL="${a#--url=}" ;;
+    --google) URL="https://www.google.com/" ;;
+    --youtube) URL="https://www.youtube.com/" ;;
+    --help|-h)
+      echo "minios-ddg  —  post-GUI helper (Wi-Fi, swap, embedded Firefox)"
+      echo "  --skip-wifi   do not open the Wi-Fi tool"
+      echo "  --skip-swap   do not enlarge zram / create the 512M disk swap file"
+      echo "  --url=URL     open this page"
+      echo "  --google      open https://www.google.com/"
+      echo "  --youtube     open https://www.youtube.com/"
+      exit 0
+      ;;
+  esac
+done
+
+swap_mb() {
+  awk '/^SwapTotal:/ { printf "%d", $2/1024; exit }' /proc/meminfo 2>/dev/null || echo 0
+}
+
+have_net() {
+  ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1 && return 0
+  ping -c 1 -W 3 1.1.1.1 >/dev/null 2>&1 && return 0
+  return 1
+}
+
+{
+  echo "===================================================="
+  echo "  Action plan: MINIOS-GOAL-01 — embedded Firefox ESR 140"
+  echo "  $(date 2>/dev/null)"
+  echo "===================================================="
+  echo "Swap is not created at boot. Browser is not loaded at boot."
+  echo "Browser is on the USB (minios-firefox/). No tce-load. No download."
+  echo
+
+  if [ "$SKIP_WIFI" != 1 ]; then
+    echo "----- wireless -----"
+    if have_net; then
+      echo "Network already answers ping."
+    else
+      echo "No ping yet. Opening the Wi-Fi tool."
+      echo "Select the network. Use Shift for uppercase letters in the password."
+      if command -v minios-wifi >/dev/null 2>&1; then
+        minios-wifi || true
+      elif command -v wifi.sh >/dev/null 2>&1; then
+        sudo wifi.sh || wifi.sh || true
+      elif command -v wifi >/dev/null 2>&1; then
+        sudo wifi || wifi || true
+      else
+        echo "No wifi helper found. Run: sudo wifi.sh"
+      fi
+      echo "Waiting for an address..."
+      i=0
+      while [ "$i" -lt 30 ]; do
+        have_net && break
+        sleep 2
+        i=$((i + 1))
+      done
+    fi
+    if have_net; then
+      ping -c 3 8.8.8.8 || true
+      ping -c 3 google.com || true
+      echo "WIFI=PASS"
+    else
+      echo "WIFI=FAIL  (browsing needs a connection)"
+    fi
+    echo
+  fi
+
+  if [ "$SKIP_SWAP" != 1 ]; then
+    echo "----- SWAP-AP-02 Option C (keep ~727 MB if already present) -----"
+    echo "swap now: $(swap_mb)M"
+    if [ -x /usr/local/bin/minios-create-swap ]; then
+      sudo /usr/local/bin/minios-create-swap --both --size=512M --yes --persist || \
+        echo "SWAP=NOT_CREATED"
+    else
+      echo "minios-create-swap missing"
+    fi
+    echo "swap after: $(swap_mb)M"
+    echo
+  fi
+
+  echo "----- embedded Firefox ESR 140 → $URL -----"
+  echo "Software rendering (Xvesa). First paint can take a minute on this CPU."
+  if [ ! -x /usr/local/bin/minios-firefox ]; then
+    echo "BROWSER=FAIL  minios-firefox missing"
+    echo "===================================================="
+    exit 1
+  fi
+  if [ -x /usr/local/bin/minios-run ]; then
+    /usr/local/bin/minios-run /usr/local/bin/minios-firefox "$URL" >/tmp/minios-firefox.log 2>&1 &
+  else
+    /usr/local/bin/minios-firefox "$URL" >/tmp/minios-firefox.log 2>&1 &
+  fi
+  echo "BROWSER=STARTED  embedded firefox  $URL"
+  echo "Google:  sudo minios-ddg --google"
+  echo "YouTube: sudo minios-ddg --youtube   (low quality; 431 MB RAM + swap)"
+  echo "===================================================="
+} 2>&1 | tee "$LOG"
+
+echo
+echo "Log: $LOG"
+echo -n "Press Enter to close this helper window (the browser stays open)... "
+read _x || true
+exit 0

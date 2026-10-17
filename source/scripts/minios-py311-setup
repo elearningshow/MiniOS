@@ -1,0 +1,54 @@
+#!/bin/sh
+# Make i686 CPython 3.11 available for YouTube play.
+# The tree stays in a squashfs on the USB and is loop-mounted.
+# Do not tar it onto tmpfs. That filled RAM and hung playback.
+# Prints the python3.11 path on stdout when ready.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+DEST=/tmp/minios-py311
+PY="$DEST/python/bin/python3.11"
+LOG=/tmp/minios-py311.log
+if [ -x "$PY" ]; then
+  echo "$PY"
+  exit 0
+fi
+SQ=""
+for d in /mnt/* /mnt/*/cde /opt/minios; do
+  if [ -f "$d/minios-py311.sqfs" ]; then
+    SQ="$d/minios-py311.sqfs"
+    break
+  fi
+done
+if [ -z "$SQ" ]; then
+  echo "minios-py311.sqfs missing" >>"$LOG"
+  echo "minios-py311.sqfs missing" >&2
+  exit 1
+fi
+MOUNT=/opt/minios/minios-py311-mount
+[ -x "$MOUNT" ] || MOUNT=/usr/local/bin/minios-py311-mount
+mkdir -p "$DEST"
+if ! mountpoint -q "$DEST" 2>/dev/null; then
+  if [ "$(id -u)" -eq 0 ]; then
+    "$MOUNT" "$SQ" >>"$LOG" 2>&1 || exit 1
+  else
+    sudo -n "$MOUNT" "$SQ" >>"$LOG" 2>&1 || exit 1
+  fi
+fi
+if [ ! -x "$PY" ]; then
+  echo "py311 binary missing after mount" >>"$LOG"
+  echo "py311 binary missing after mount" >&2
+  exit 1
+fi
+if [ ! -s /tmp/minios-ca-bundle.crt ]; then
+  if [ -f /usr/local/etc/ssl/certs/ca-certificates.crt ]; then
+    cp -f /usr/local/etc/ssl/certs/ca-certificates.crt /tmp/minios-ca-bundle.crt
+  elif [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+    cp -f /etc/ssl/certs/ca-certificates.crt /tmp/minios-ca-bundle.crt
+  elif [ -d /usr/local/share/ca-certificates/mozilla ]; then
+    cat /usr/local/share/ca-certificates/mozilla/*.crt > /tmp/minios-ca-bundle.crt 2>/dev/null || true
+  elif [ -d /tmp/tcloop/ca-certificates/usr/local/share/ca-certificates/mozilla ]; then
+    cat /tmp/tcloop/ca-certificates/usr/local/share/ca-certificates/mozilla/*.crt \
+      > /tmp/minios-ca-bundle.crt 2>/dev/null || true
+  fi
+fi
+echo "$PY"
+exit 0

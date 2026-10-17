@@ -1,0 +1,406 @@
+#!/bin/sh
+# Per-app RAM kit. load NAME mounts what that icon needs.
+# unload NAME kills its processes, deletes its /tmp files, and unmounts
+# only the tczs this kit loaded that no other open kit still needs.
+# Never unmounts the desktop (X, wallpaper) or Wi-Fi.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-appkit.log
+DIR=/tmp/minios-appkit
+CMD="${1:-}"
+NAME="${2:-}"
+mkdir -p "$DIR"
+
+ram_avail_kb() {
+  awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0
+}
+
+zram_used_kb() {
+  awk 'NR>1 && $1 ~ /zram/ {u+=$4} END {print u+0}' /proc/swaps 2>/dev/null || echo 0
+}
+swap_used_kb() {
+  awk 'NR>1 && $1 !~ /zram/ {u+=$4} END {print u+0}' /proc/swaps 2>/dev/null || echo 0
+}
+
+note_ram_start() {
+  app="$1"
+  ram_avail_kb >"$DIR/$app.ram0"
+  zram_used_kb >"$DIR/$app.zram0"
+  swap_used_kb >"$DIR/$app.swap0"
+  echo "track start $app ram_free=$(cat "$DIR/$app.ram0")kB zram_used=$(cat "$DIR/$app.zram0")kB swap_used=$(cat "$DIR/$app.swap0")kB" >>"$LOG"
+}
+
+note_ram_stop() {
+  app="$1"
+  before=$(cat "$DIR/$app.ram0" 2>/dev/null || echo 0)
+  after=$(ram_avail_kb)
+  freed=$((after - before))
+  echo "$after" >"$DIR/$app.ram1"
+  echo "$freed" >"$DIR/$app.ram-freed"
+  zbefore=$(cat "$DIR/$app.zram0" 2>/dev/null || echo 0)
+  zafter=$(zram_used_kb)
+  sbefore=$(cat "$DIR/$app.swap0" 2>/dev/null || echo 0)
+  safter=$(swap_used_kb)
+  echo "$zafter" >"$DIR/$app.zram1"
+  echo "$safter" >"$DIR/$app.swap1"
+  {
+    echo "track stop $app ram_free ${before}kB -> ${after}kB freed=${freed}kB zram_used ${zbefore}kB -> ${zafter}kB swap_used ${sbefore}kB -> ${safter}kB"
+  } >>"$LOG"
+  if [ "$freed" -gt 0 ]; then
+    mb=$((freed / 1024))
+    echo "Freed ${mb} MB from $app." >/tmp/minios-notice.result
+  else
+    echo "Closed $app." >/tmp/minios-notice.result
+  fi
+}
+
+canon() {
+  n=$(printf '%s' "$1" | sed 's/^minios-//')
+  case "$n" in
+    fltube|youtube) echo youtube ;;
+    tiktok) echo tiktok ;;
+    player|player-bar|mplayer) echo player ;;
+    mp3|music) echo mp3 ;;
+    text-browser|links|quick-search) echo text-browser ;;
+    ai) echo ai ;;
+    nightly|firefox) echo nightly ;;
+    *) echo "$n" ;;
+  esac
+}
+
+# Packages this icon needs. Desktop / Wi-Fi packages are never listed.
+kit_tczs() {
+  case "$(canon "$1")" in
+    youtube)
+      echo python3.9 ffmpeg4 mplayer-cli libcdio libcdio-paranoia xvid libasound alsa alsa-config
+      ;;
+    tiktok)
+      # python3.9 stays mounted. Listing it here made TikTok close unmount
+      # the interpreter, and the next AI Chat said the helper was missing.
+      echo ffmpeg4 mplayer-cli libcdio libcdio-paranoia xvid
+      ;;
+    player)
+      echo mplayer-cli ffmpeg4 libcdio libcdio-paranoia xvid libasound alsa alsa-config
+      ;;
+    mp3)
+      echo mplayer-cli libasound alsa alsa-config
+      ;;
+    text-browser|quick-search)
+      echo links
+      ;;
+    ai)
+      # The chat posts with python3.9. It is kept loaded on close.
+      echo python3.9
+      ;;
+    nightly)
+      echo
+      ;;
+  esac
+}
+
+# Never unmount: wallpaper, X, Wi-Fi, and their libraries.
+is_keep_tcz() {
+  case "$1" in
+    libmng|lcms2|mesa|libEGL|libXxf86vm|SDL|libjpeg-turbo|libpng|imlib2|feh) return 0 ;;
+    libX11|libXext|libXrender|libXft|libXau|libXdmcp|libxcb|libXcursor|libXfixes) return 0 ;;
+    fontconfig|freetype|zlib|bzip2|expat|harfbuzz) return 0 ;;
+    Xvesa|fltk-1.3|wbar|aterm|b43*|firmware*|wireless*) return 0 ;;
+    python3.9|links) return 0 ;;
+  esac
+  return 1
+}
+
+other_kit_needs() {
+  pkg="$1"
+  skip="$2"
+  for f in "$DIR"/*.active; do
+    [ -f "$f" ] || continue
+    app=$(basename "$f" .active)
+    [ "$app" = "$skip" ] && continue
+    kit_tczs "$app" | grep -qx "$pkg" && return 0
+    if [ -f "$DIR/$app.tczs" ]; then
+      grep -qx "$pkg" "$DIR/$app.tczs" && return 0
+    fi
+  done
+  return 1
+}
+
+load_one_tcz() {
+  pkg="$1"
+  [ -n "$pkg" ] || return 0
+  if [ -x /opt/minios/minios-load-tcz ]; then
+    /opt/minios/minios-load-tcz "$pkg" >>"$LOG" 2>&1 || true
+  fi
+}
+
+unload_one_tcz() {
+  pkg="$1"
+  app="$2"
+  [ -n "$pkg" ] || return 0
+  if is_keep_tcz "$pkg"; then
+    echo "keep tcz $pkg" >>"$LOG"
+    return 0
+  fi
+  if other_kit_needs "$pkg" "$app"; then
+    echo "shared tcz $pkg still needed" >>"$LOG"
+    return 0
+  fi
+  if mountpoint -q "/tmp/tcloop/$pkg" 2>/dev/null; then
+    umount "/tmp/tcloop/$pkg" >>"$LOG" 2>&1 || \
+      umount -l "/tmp/tcloop/$pkg" >>"$LOG" 2>&1 || true
+    echo "umount $pkg" >>"$LOG"
+  fi
+  # Remove only links that pointed at this squashfs.
+  for l in /usr/local/lib/lib* /usr/local/bin/*; do
+    [ -L "$l" ] || continue
+    t=$(readlink "$l" 2>/dev/null || true)
+    case "$t" in
+      /tmp/tcloop/"$pkg"/*) rm -f "$l" ;;
+    esac
+  done
+}
+
+kill_kit_procs() {
+  case "$(canon "$1")" in
+    youtube)
+      pkill -x fltube 2>/dev/null || true
+      pkill -f /opt/minios/bin/fltube 2>/dev/null || true
+      pkill -f /opt/minios/minios-youtube 2>/dev/null || true
+      pkill -f minios-yt-resolve 2>/dev/null || true
+      pkill -f minios-shorts-play 2>/dev/null || true
+      pkill -f yt-dlp 2>/dev/null || true
+      pkill -f /opt/minios/minios-player-bar 2>/dev/null || true
+      pkill -x mplayer 2>/dev/null || true
+      pkill -f /tmp/tcloop/mplayer-cli/usr/local/bin/mplayer 2>/dev/null || true
+      ;;
+    tiktok)
+      pkill -f /opt/minios/minios-tiktok-search 2>/dev/null || true
+      pkill -f /opt/minios/minios-tiktok-thumbs 2>/dev/null || true
+      pkill -f /opt/minios/minios-tiktok-play 2>/dev/null || true
+      pkill -x minios-tiktok 2>/dev/null || true
+      pkill -f '/opt/minios/minios-tiktok ' 2>/dev/null || true
+      pkill -f /opt/minios/minios-tt-player-bar 2>/dev/null || true
+      pkill -f /usr/local/bin/minios-tt-player-bar 2>/dev/null || true
+      pkill -f /opt/minios/minios-tt-mplayer 2>/dev/null || true
+      pkill -f /usr/local/bin/minios-tt-mplayer 2>/dev/null || true
+      # TikTok close stops the recorded TikTok player only.
+      if [ -f /tmp/minios-tt-mp.pid ]; then
+        mp=$(cat /tmp/minios-tt-mp.pid 2>/dev/null || true)
+        case "$mp" in
+          ''|*[!0-9]*) ;;
+          *)
+            if [ "$(cat /proc/$mp/comm 2>/dev/null)" = mplayer ]; then
+              kill -9 "$mp" 2>/dev/null || true
+            fi
+            ;;
+        esac
+      fi
+      ;;
+    player)
+      pkill -f /opt/minios/minios-player-bar 2>/dev/null || true
+      pkill -f /usr/local/bin/minios-player-bar 2>/dev/null || true
+      pkill -f minios-shorts-play 2>/dev/null || true
+      pkill -f minios-yt-resolve 2>/dev/null || true
+      pkill -f yt-dlp-2026 2>/dev/null || true
+      if [ -f /tmp/minios-mp.pid ]; then
+        mp=$(cat /tmp/minios-mp.pid 2>/dev/null || true)
+        case "$mp" in
+          ''|*[!0-9]*) ;;
+          *)
+            if [ "$(cat /proc/$mp/comm 2>/dev/null)" = mplayer ]; then
+              kill "$mp" 2>/dev/null || true
+            fi
+            ;;
+        esac
+      fi
+      ;;
+    mp3)
+      pkill -x minios-mp3 2>/dev/null || true
+      pkill -x mplayer 2>/dev/null || true
+      ;;
+    text-browser|quick-search)
+      pkill -x links 2>/dev/null || true
+      pkill -f /opt/minios/minios-text-browser 2>/dev/null || true
+      pkill -f /opt/minios/minios-quick-search 2>/dev/null || true
+      ;;
+    ai)
+      if [ -f /tmp/minios-ai.pid ]; then
+        ap=$(cat /tmp/minios-ai.pid 2>/dev/null || true)
+        case "$ap" in
+          ''|*[!0-9]*) ;;
+          *)
+            cmd=$(tr '\0' ' ' < "/proc/$ap/cmdline" 2>/dev/null || true)
+            case "$cmd" in
+              *minios-ai*) kill "$ap" 2>/dev/null || true ;;
+            esac
+            ;;
+        esac
+      fi
+      # The question helper is a child. Do not match minios-ai-chat here:
+      # that string is also in minios-run, and killing it would stop reclaim.
+      pkill -f /opt/minios/minios-ai-ask >/dev/null 2>&1 || true
+      pkill -f /usr/local/bin/minios-ai-ask >/dev/null 2>&1 || true
+      ;;
+    nightly)
+      pkill -f '/usr/local/lib/firefox/firefox' 2>/dev/null || true
+      pkill -f '/minios-firefox/' 2>/dev/null || true
+      pkill -f firefox-bin 2>/dev/null || true
+      pkill -x firefox 2>/dev/null || true
+      pkill -f 'Isolated Web Co' 2>/dev/null || true
+      pkill -f 'Privileged Cont' 2>/dev/null || true
+      pkill -f 'Web Content' 2>/dev/null || true
+      pkill -f 'WebExtensions' 2>/dev/null || true
+      pkill -f plugin-container 2>/dev/null || true
+      pkill -f 'RDD Process' 2>/dev/null || true
+      pkill -f 'Socket Process' 2>/dev/null || true
+      sleep 0.4
+      pkill -9 -f '/usr/local/lib/firefox/firefox' 2>/dev/null || true
+      pkill -9 -f firefox-bin 2>/dev/null || true
+      pkill -9 -x firefox 2>/dev/null || true
+      ;;
+  esac
+}
+
+wipe_kit_tmp() {
+  case "$(canon "$1")" in
+    youtube)
+      rm -rf /tmp/fltube-cache /tmp/minios-ytplay.lock
+      rm -f /tmp/minios-yt-playlist /tmp/minios-yt-shorts /tmp/minios-yt-tiktok \
+            /tmp/minios-ytplay.mp4 /tmp/minios-ytplay.audio /tmp/minios-ytplay.a.m4a \
+            /tmp/minios-ytplay.a.aac /tmp/minios-ytplay.sub /tmp/minios-dl.progress \
+            /tmp/minios-mp.cmd /tmp/minios-mp.pid /tmp/minios-mp.out /tmp/minios-mp.done \
+            /tmp/minios-mp.fail /tmp/minios-mp.geom /tmp/minios-player-bar.pid \
+            /tmp/minios-player-mode /tmp/minios-mp.reload /tmp/minios-mp.quit
+      # The Python tree is a mounted squashfs. Deleting through the mount
+      # walks every file and holds RAM. Unmount first, then remove the dir.
+      if mountpoint -q /tmp/minios-py311 2>/dev/null; then
+        if [ -x /opt/minios/minios-py311-mount ]; then
+          /opt/minios/minios-py311-mount umount >>"$LOG" 2>&1 || true
+        fi
+        umount /tmp/minios-py311 >>"$LOG" 2>&1 || \
+          umount -l /tmp/minios-py311 >>"$LOG" 2>&1 || true
+      fi
+      if ! mountpoint -q /tmp/minios-py311 2>/dev/null; then
+        rm -rf /tmp/minios-py311
+      fi
+      ;;
+    tiktok)
+      rm -rf /tmp/minios-tt-dl /tmp/minios-tt-thumbs
+      rm -f /tmp/minios-tt-search.html /tmp/minios-tt-raw.txt /tmp/minios-tt-last.txt \
+            /tmp/minios-tt-rows.txt /tmp/minios-tt-cookies /tmp/minios-tt-reason.txt \
+            /tmp/minios-tt-chunk.html /tmp/minios-tt-oe.json /tmp/minios-tt-thumbs.pid \
+            /tmp/minios-tiktok.ready /tmp/minios-tt-play.pid /tmp/minios-yt-tiktok
+      ;;
+    player)
+      rm -f /tmp/minios-mp.cmd /tmp/minios-mp.pid /tmp/minios-mp.out \
+            /tmp/minios-mp.done /tmp/minios-mp.fail /tmp/minios-mp.geom \
+            /tmp/minios-dl.progress /tmp/minios-player-bar.pid \
+            /tmp/minios-player-mode /tmp/minios-mp.reload /tmp/minios-mp.quit
+      rm -rf /tmp/minios-ytplay.lock /tmp/minios-tt-dl
+      if ! pgrep -x fltube >/dev/null 2>&1; then
+        rm -rf /tmp/minios-py311
+        rm -f /tmp/minios-yt-playlist /tmp/minios-ytplay.mp4
+      fi
+      ;;
+    mp3)
+      rm -f /tmp/minios-mp3.pid
+      ;;
+    text-browser|quick-search)
+      rm -f /tmp/minios-tb.ready /tmp/minios-text-browser.log
+      ;;
+    ai)
+      rm -f /tmp/minios-ai.ready /tmp/minios-ai.pid /tmp/minios-ai.json \
+            /tmp/minios-ai.log /tmp/minios-ai-hist.json \
+            /tmp/minios-ai-req.json /tmp/minios-ai-reply.json \
+            /tmp/minios-ai-out.txt
+      ;;
+    nightly)
+      rm -rf /home/tc/.cache/mozilla /tmp/mozilla* \
+             /home/tc/.mozilla/firefox/*/cache2 \
+             /home/tc/.mozilla/firefox/*/startupCache \
+             /home/tc/.mozilla/firefox/*/thumbnails \
+             /home/tc/.mozilla/firefox/*/shader-cache
+      ;;
+  esac
+}
+
+do_load() {
+  app=$(canon "$NAME")
+  echo "===== appkit load $app $(date -u) =====" >>"$LOG"
+  note_ram_start "$app"
+  : >"$DIR/$app.active"
+  : >"$DIR/$app.tczs"
+  for t in $(kit_tczs "$app"); do
+    echo "$t" >>"$DIR/$app.tczs"
+    load_one_tcz "$t"
+  done
+  echo "loaded $(tr '\n' ' ' < "$DIR/$app.tczs")" >>"$LOG"
+}
+
+do_note() {
+  app=$(canon "$NAME")
+  extra="$3"
+  [ -n "$extra" ] || return 0
+  mkdir -p "$DIR"
+  : >"$DIR/$app.active"
+  grep -qx "$extra" "$DIR/$app.tczs" 2>/dev/null && return 0
+  echo "$extra" >>"$DIR/$app.tczs"
+  echo "note $app +$extra" >>"$LOG"
+}
+
+do_unload() {
+  app=$(canon "$NAME")
+  echo "===== appkit unload $app $(date -u) =====" >>"$LOG"
+  kill_kit_procs "$app"
+  sleep 0.1
+  kill_kit_procs "$app"
+  wipe_kit_tmp "$app"
+  if [ -f "$DIR/$app.tczs" ]; then
+    while read -r t; do
+      [ -n "$t" ] || continue
+      unload_one_tcz "$t" "$app"
+    done < "$DIR/$app.tczs"
+  else
+    for t in $(kit_tczs "$app"); do
+      unload_one_tcz "$t" "$app"
+    done
+  fi
+  rm -f "$DIR/$app.active" "$DIR/$app.tczs"
+  note_ram_stop "$app"
+  echo "unloaded $app" >>"$LOG"
+}
+
+do_unload_all() {
+  echo "===== appkit unload-all $(date -u) =====" >>"$LOG"
+  for f in "$DIR"/*.active; do
+    [ -f "$f" ] || continue
+    NAME=$(basename "$f" .active)
+    do_unload
+  done
+  for n in youtube tiktok player mp3 text-browser nightly; do
+    NAME=$n
+    do_unload
+  done
+}
+
+case "$CMD" in
+  load)
+    [ -n "$NAME" ] || exit 1
+    do_load
+    ;;
+  note)
+    [ -n "$NAME" ] || exit 1
+    do_note "$@"
+    ;;
+  unload)
+    [ -n "$NAME" ] || exit 1
+    do_unload
+    ;;
+  unload-all)
+    do_unload_all
+    ;;
+  *)
+    echo "usage: minios-appkit load|unload|note|unload-all NAME [tcz]" >&2
+    exit 1
+    ;;
+esac
+exit 0

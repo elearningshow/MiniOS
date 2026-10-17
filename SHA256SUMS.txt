@@ -1,0 +1,16 @@
+# SHA-256 of the stick image
+C9237E3E63DAFBF83E152ECAE8807AD65B6075B5BB69E88B457B42F8F863875E  MiniOS-TC-v0.2.260-bar.img
+
+# MD5 of the stick image
+FF61011583D0F0E0F6E1DC50EFCDFB0A  MiniOS-TC-v0.2.260-bar.img
+
+# MD5 of the player files that are on the image
+4f98713e736ac7f892d7ceccb053606e  source/usb-binaries/minios-player-bar
+a2ecd453d68056ba8ed0b50cc1108082  source/usb-binaries/minios-mplayer
+1ac1e77d242a1798292ef7df9badc4cc  source/usb-binaries/minios-tt-player-bar
+
+# MD5 of files that must not replace the three files above
+fb898f735c318d573802662423370d6e  source/scripts/minios-player-bar
+e9722ff51e6287d5426912d375ce3ffd  source/scripts/minios-mplayer
+31e3231563e09f6d3eaf8abcec59dc1d  source/restore-106/minios-player-bar
+a2ecd453d68056ba8ed0b50cc1108082  source/restore-106/minios-mplayer

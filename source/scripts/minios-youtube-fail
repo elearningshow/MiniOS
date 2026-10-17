@@ -1,0 +1,57 @@
+#!/bin/sh
+# FLTUBE-AP-01 v1.4: YouTube fail dialog with Open log.
+# ISS-001. Tools already on the image (xmessage + aterm).
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+LOG=/tmp/minios-youtube.log
+
+open_log() {
+  if [ ! -f "$LOG" ]; then
+    if command -v xmessage >/dev/null 2>&1; then
+      xmessage -center "Log not found: $LOG"
+    elif command -v aterm >/dev/null 2>&1; then
+      aterm +tr +sb -bg black -fg white -T MiniOS -e sh -c \
+        'echo Log not found: /tmp/minios-youtube.log; echo; echo -n Press Enter...; read _'
+    fi
+    return 0
+  fi
+  if command -v aterm >/dev/null 2>&1; then
+    if command -v less >/dev/null 2>&1; then
+      exec aterm +tr +sb -bg black -fg white -T "YouTube log" -e less "$LOG"
+    fi
+    if command -v more >/dev/null 2>&1; then
+      exec aterm +tr +sb -bg black -fg white -T "YouTube log" -e more "$LOG"
+    fi
+    exec aterm +tr +sb -bg black -fg white -T "YouTube log" -e sh -c \
+      'cat /tmp/minios-youtube.log; echo; echo -n Press Enter...; read _'
+  fi
+  cat "$LOG"
+}
+
+echo "YouTube did not open." >>"$LOG"
+
+if command -v xmessage >/dev/null 2>&1; then
+  xmessage -center -buttons "Open log:10,Close:20" \
+    "YouTube did not open."
+  rc=$?
+  if [ "$rc" = 10 ]; then
+    open_log
+  fi
+  exit 0
+fi
+
+# No xmessage: aterm menu
+if command -v aterm >/dev/null 2>&1; then
+  aterm +tr +sb -bg black -fg white -T MiniOS -geometry 48x6+160+160 -e sh -c '
+    echo YouTube did not open.
+    echo
+    echo "1 = Open log"
+    echo "2 = Close"
+    echo -n "Choice: "
+    read c
+    [ "$c" = 1 ] && exec /opt/minios/minios-youtube-fail-open
+  '
+  exit 0
+fi
+echo "YouTube did not open. See $LOG"
+exit 0

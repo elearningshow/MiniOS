@@ -1,0 +1,34 @@
+#!/bin/sh
+# One-shot Dillo / desktop listing for a photograph. Does not install Dillo.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+export HOME="${HOME:-/home/tc}"
+OUT=/tmp/minios-diag-dillo.txt
+{
+  echo "=== MiniOS Dillo diagnostic ==="
+  echo "date: $(date)"
+  echo "image-id: $(cat /opt/minios/IMAGE-ID.txt 2>/dev/null || echo unknown)"
+  echo
+  echo "--- which dillo ---"
+  which dillo 2>&1 || echo "(not in PATH)"
+  echo
+  echo "--- tce.installed (dillo) ---"
+  ls /usr/local/tce.installed 2>/dev/null | grep -i dillo || echo "(no dillo entry)"
+  echo
+  echo "--- Desktop listings ---"
+  ls -la "$HOME/Desktop" /home/tc/Desktop 2>&1
+  echo
+  echo "--- any *dillo* .desktop ---"
+  find /home /usr/local/share/applications -name '*dillo*' 2>/dev/null || echo "(none)"
+} >"$OUT" 2>&1
+
+if command -v aterm >/dev/null 2>&1; then
+  aterm -title "Dillo diagnostic" -bg black -fg white \
+    -e sh -c "cat $OUT; echo; echo Photograph this window.; echo Press Enter; read x"
+elif command -v popup >/dev/null 2>&1; then
+  popup "$(cat "$OUT")"
+elif command -v xmessage >/dev/null 2>&1; then
+  xmessage -file "$OUT" -buttons OK:0 -default OK -center
+else
+  cat "$OUT"
+fi

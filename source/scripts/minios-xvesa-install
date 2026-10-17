@@ -1,0 +1,48 @@
+#!/bin/sh
+# Run from bootsync, before startx. Replace the Xvesa.tcz binary with a
+# setuid wrapper that always adds -nozap. Then patch ~/.xsession.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-xvesa-nozap.log
+REAL=/usr/local/bin/Xvesa
+KEEP=/opt/minios/Xvesa.real
+WRAP=/opt/minios/minios-xvesa-wrap
+
+note() { echo "minios-xvesa-install: $*" >>"$LOG"; }
+
+if [ ! -x "$REAL" ]; then
+  note "Xvesa not loaded yet"
+  exit 0
+fi
+
+if strings "$REAL" 2>/dev/null | grep -q minios-xvesa-wrap; then
+  note "wrapper already in place"
+else
+  if [ ! -x "$KEEP" ]; then
+    cp -a "$REAL" "$KEEP" || {
+      note "could not copy real Xvesa"
+      exit 0
+    }
+    chmod 4755 "$KEEP" 2>/dev/null || true
+  fi
+  if [ -x "$WRAP" ] && [ -x "$KEEP" ]; then
+    rm -f "$REAL"
+    cp -f "$WRAP" "$REAL"
+    chmod 4755 "$REAL"
+    note "installed Xvesa wrap -> $KEEP"
+  else
+    note "wrap or keep missing"
+  fi
+fi
+
+# Live session file: stock Xlibs lines plus full-path Xvesa. Never from core.gz.
+if [ ! -s /home/tc/.xsession ] && [ -s /etc/skel/.xsession ]; then
+  cp -f /etc/skel/.xsession /home/tc/.xsession
+  chown 1001:50 /home/tc/.xsession 2>/dev/null || true
+fi
+if [ -x /opt/minios/minios-xvesa-nozap ]; then
+  /opt/minios/minios-xvesa-nozap
+fi
+if [ -f /home/tc/.xsession ]; then
+  chmod 0755 /home/tc/.xsession 2>/dev/null || true
+fi
+exit 0

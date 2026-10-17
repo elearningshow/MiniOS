@@ -1,0 +1,16 @@
+Name: MiniOS-TC-v0.2.260-bar
+Image file: MiniOS-TC-v0.2.260-bar.img
+Desktop caption: MiniOS-TC-v0.2.260
+Windows volume name: MINIOS-2260
+Image size: 905969664 bytes
+SHA-256: C9237E3E63DAFBF83E152ECAE8807AD65B6075B5BB69E88B457B42F8F863875E
+MD5: FF61011583D0F0E0F6E1DC50EFCDFB0A
+Base: Tiny Core Linux 16.2, 32-bit
+Boot: live USB only
+Partition start: byte 1048576
+Write mode: raw disk image (Rufus DD Image). Not an ISO.
+YouTube player bar on the image: source/usb-binaries/minios-player-bar MD5 4f98713e736ac7f892d7ceccb053606e
+YouTube mplayer wrapper on the image: source/usb-binaries/minios-mplayer MD5 a2ecd453d68056ba8ed0b50cc1108082
+TikTok player bar on the image: source/usb-binaries/minios-tt-player-bar MD5 1ac1e77d242a1798292ef7df9badc4cc
+Wallpaper: source/wallpaper/mini-os-bg.jpg 1792x1008, painted with feh --bg-scale
+Next bake: bake/build-next-image.sh writes out/MiniOS-TC-v0.2.261-edit.img

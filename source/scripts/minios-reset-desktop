@@ -1,0 +1,25 @@
+#!/bin/sh
+# Restart the dock and redraw the desktop. Do not kill flwm (that ends X).
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+export HOME="${HOME:-/home/tc}"
+LOG=/tmp/minios-reset-desktop.log
+{
+  echo "===== reset desktop $(date -u) ====="
+  # Never restart wbar if it is already up. That hid the dock and
+  # could add a second Media Player icon.
+  if ! pgrep -x wbar >/dev/null 2>&1; then
+    if [ -x /usr/local/bin/wbar.sh ]; then
+      wbar.sh
+    fi
+  fi
+  if [ -x /opt/minios/swap-wbar.sh ]; then
+    /opt/minios/swap-wbar.sh
+  fi
+  if [ -x /opt/minios/setbg.sh ]; then
+    /opt/minios/setbg.sh
+  fi
+  xrefresh 2>/dev/null || true
+  echo "done"
+} >>"$LOG" 2>&1
+exit 0

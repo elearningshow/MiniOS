@@ -1,0 +1,20 @@
+Defaults:tc !requiretty
+tc ALL=(root) NOPASSWD: /opt/minios/minios-drop-caches
+tc ALL=(root) NOPASSWD: /usr/local/bin/minios-drop-caches
+tc ALL=(root) NOPASSWD: /opt/minios/minios-reclaim
+tc ALL=(root) NOPASSWD: /usr/local/bin/minios-reclaim
+tc ALL=(root) NOPASSWD: /opt/minios/minios-reclaim auto
+tc ALL=(root) NOPASSWD: /usr/local/bin/minios-reclaim auto
+tc ALL=(root) NOPASSWD: /opt/minios/minios-reclaim full
+tc ALL=(root) NOPASSWD: /usr/local/bin/minios-reclaim full
+tc ALL=(root) NOPASSWD: /opt/minios/minios-fix-tcedir
+tc ALL=(root) NOPASSWD: /usr/local/bin/minios-fix-tcedir
+tc ALL=(root) NOPASSWD: /opt/minios/minios-sound-up
+tc ALL=(root) NOPASSWD: /usr/local/bin/minios-sound-up
+tc ALL=(root) NOPASSWD: /opt/minios/minios-sound-up libs-only
+tc ALL=(root) NOPASSWD: /usr/local/bin/minios-sound-up libs-only
+tc ALL=(root) NOPASSWD: /opt/minios/minios-log-usb
+tc ALL=(root) NOPASSWD: /usr/local/bin/minios-log-usb
+tc ALL=(root) NOPASSWD: /opt/minios/minios-py311-mount
+tc ALL=(root) NOPASSWD: /usr/local/bin/minios-py311-mount
+

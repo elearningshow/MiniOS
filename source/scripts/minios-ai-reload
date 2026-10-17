@@ -1,0 +1,22 @@
+#!/bin/sh
+# Load Python again and record whether the answer helper can run.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-ai.log
+echo "reload $(date)" >>"$LOG"
+if [ -x /opt/minios/minios-load-tcz ]; then
+  /opt/minios/minios-load-tcz python3.9 >>"$LOG" 2>&1 || true
+fi
+if [ -d /tmp/tcloop/python3.9/usr/local/lib ]; then
+  LD_LIBRARY_PATH="/tmp/tcloop/python3.9/usr/local/lib:${LD_LIBRARY_PATH:-}"
+  export LD_LIBRARY_PATH
+fi
+for p in /usr/local/bin/python3.9 /tmp/tcloop/python3.9/usr/local/bin/python3.9; do
+  if [ -x "$p" ] && "$p" -c 'print(1)' >>"$LOG" 2>&1; then
+    echo ok >/tmp/minios-ai.helper
+    echo "reload ok $p" >>"$LOG"
+    exit 0
+  fi
+done
+rm -f /tmp/minios-ai.helper
+echo "reload failed" >>"$LOG"
+exit 1

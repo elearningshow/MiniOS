@@ -1,0 +1,19 @@
+#!/bin/sh
+# Kernel Ctrl+Alt+Delete. Never reboot. Never kill X.
+# Show the Reset desktop / Refresh RAM menu on the running desktop.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+export HOME="${HOME:-/home/tc}"
+if [ -z "${XAUTHORITY:-}" ] && [ -f /home/tc/.Xauthority ]; then
+  export XAUTHORITY=/home/tc/.Xauthority
+fi
+if [ ! -e /tmp/.X11-unix/X0 ] && [ ! -S /tmp/.X11-unix/X0 ]; then
+  exit 0
+fi
+if [ -x /opt/minios/minios-cad ]; then
+  exec /opt/minios/minios-cad
+fi
+if [ -x /usr/local/bin/minios-cad ]; then
+  exec /usr/local/bin/minios-cad
+fi
+exit 0

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Media Player
+Comment=MiniOS Media Player
+Exec=/usr/local/bin/minios-run player -- /usr/local/bin/minios-player
+Icon=/usr/local/share/pixmaps/minios/uJZ9u.png
+X-FullPathIcon=/usr/local/share/pixmaps/minios/uJZ9u.png
+Terminal=false
+Categories=AudioVideo;Audio;
+StartupNotify=false

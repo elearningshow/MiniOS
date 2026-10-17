@@ -1,0 +1,77 @@
+#!/bin/sh
+# Free RAM, zram, and the swap file for one closed search window.
+# YouTube and TikTok both use this. A second call while one is running does nothing.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+NAME="${1:-}"
+[ -n "$NAME" ] || exit 1
+case "$NAME" in
+  youtube|fltube|minios-youtube) KEY=youtube ;;
+  tiktok|minios-tiktok) KEY=tiktok ;;
+  *) KEY=$NAME ;;
+esac
+DONE="/tmp/minios-gui-closed-${KEY}"
+LOCK="/tmp/minios-gui-close-${KEY}.lock"
+# The window, its wrapper, and minios-run can all call this. One pass.
+if [ -f "$DONE" ]; then
+  if [ ! -d "$LOCK" ]; then
+    rm -f /tmp/minios-reclaiming
+  fi
+  exit 0
+fi
+if ! mkdir "$LOCK" 2>/dev/null; then
+  exit 0
+fi
+LOG=/tmp/minios-reclaim.log
+ram_kb() { awk '/MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0; }
+zram_kb() { awk 'NR>1 && $1 ~ /zram/ {u+=$4} END {print u+0}' /proc/swaps 2>/dev/null || echo 0; }
+swap_kb() { awk 'NR>1 && $1 !~ /zram/ {u+=$4} END {print u+0}' /proc/swaps 2>/dev/null || echo 0; }
+ram0=$(ram_kb)
+z0=$(zram_kb)
+s0=$(swap_kb)
+{
+  echo "===== gui-close $NAME $(date -u) ====="
+  echo "before ram_free=${ram0}kB zram_used=${z0}kB swap_used=${s0}kB"
+} >>"$LOG"
+: >/tmp/minios-reclaiming
+# TikTok close must not show Please wait or pull zram back into RAM.
+# That pull is what stopped AI Chat. YouTube still uses the block below.
+if [ "$KEY" = tiktok ]; then
+  echo "tiktok close: no please-wait, no zram" >>"$LOG"
+  if [ -x /opt/minios/minios-tt-release ]; then
+    /opt/minios/minios-tt-release >>"$LOG" 2>&1 || true
+  elif [ -x /usr/local/bin/minios-tt-release ]; then
+    /usr/local/bin/minios-tt-release >>"$LOG" 2>&1 || true
+  fi
+  : >"$DONE"
+  rm -f /tmp/minios-reclaiming /tmp/minios-notice.pid /tmp/minios-notice.shown
+  rmdir "$LOCK" 2>/dev/null || rm -rf "$LOCK"
+  exit 0
+fi
+: >/tmp/minios-notice.shown
+rm -f /tmp/minios-notice.done /tmp/minios-notice.result
+if [ -x /opt/minios/minios-cad ]; then
+  /opt/minios/minios-cad --notice "Please wait." "Freeing memory." >/dev/null 2>&1 &
+elif [ -x /usr/local/bin/minios-cad ]; then
+  /usr/local/bin/minios-cad --notice "Please wait." "Freeing memory." >/dev/null 2>&1 &
+fi
+sleep 0.15
+if [ -x /opt/minios/minios-reclaim ]; then
+  sudo -n /opt/minios/minios-reclaim auto "$NAME" >>"$LOG" 2>&1 || \
+    /opt/minios/minios-reclaim auto "$NAME" >>"$LOG" 2>&1 || true
+elif [ -x /usr/local/bin/minios-reclaim ]; then
+  sudo -n /usr/local/bin/minios-reclaim auto "$NAME" >>"$LOG" 2>&1 || \
+    /usr/local/bin/minios-reclaim auto "$NAME" >>"$LOG" 2>&1 || true
+fi
+ram1=$(ram_kb)
+z1=$(zram_kb)
+s1=$(swap_kb)
+{
+  echo "after ram_free=${ram1}kB zram_used=${z1}kB swap_used=${s1}kB"
+} >>"$LOG"
+printf '%s\n' "Memory freed." >/tmp/minios-notice.result
+: >/tmp/minios-notice.done
+: >"$DONE"
+rm -f /tmp/minios-reclaiming /tmp/minios-notice.pid /tmp/minios-notice.shown
+rmdir "$LOCK" 2>/dev/null || rm -rf "$LOCK"
+exit 0

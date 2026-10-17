@@ -1,0 +1,219 @@
+#!/bin/sh
+# Refresh desktop: close user apps, free RAM, keep X and the dock.
+# Kill apps as the current user first. sudo is only for drop_caches.
+# Do not restart wbar if it is already running.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+export HOME="${HOME:-/home/tc}"
+LOG=/tmp/minios-refresh-desktop.log
+
+ask_mplayer_quit() {
+  echo 1 >/tmp/minios-mp.quit
+  echo 1 >/tmp/minios-tt-mp.quit
+  if [ -p /tmp/minios-mp.cmd ]; then
+    ( printf 'quit\n' > /tmp/minios-mp.cmd ) &
+    qpid=$!
+    sleep 0.3
+    kill "$qpid" 2>/dev/null || true
+  fi
+  if [ -p /tmp/minios-tt-mp.cmd ]; then
+    ( printf 'quit\n' > /tmp/minios-tt-mp.cmd ) &
+    tqpid=$!
+    sleep 0.3
+    kill "$tqpid" 2>/dev/null || true
+  fi
+  if [ -s /tmp/minios-mp.pid ]; then
+    kill -TERM $(cat /tmp/minios-mp.pid 2>/dev/null) 2>/dev/null || true
+  fi
+  if [ -s /tmp/minios-tt-mp.pid ]; then
+    kill -TERM $(cat /tmp/minios-tt-mp.pid 2>/dev/null) 2>/dev/null || true
+  fi
+}
+
+kill_by_comm() {
+  sig="${1:-TERM}"
+  for c in /proc/[0-9]*/comm; do
+    [ -r "$c" ] || continue
+    n=$(tr -d '\n' < "$c" 2>/dev/null)
+    case "$n" in
+      mplayer|mplayer.bin)
+        pid=${c#/proc/}
+        pid=${pid%/comm}
+        kill "-$sig" "$pid" 2>/dev/null || true
+        ;;
+    esac
+  done
+}
+
+clear_run_locks() {
+  # Locks are directories (mkdir). rm -f leaves them and dock clicks do nothing.
+  rm -rf /tmp/minios-run-*.lock /tmp/minios-run.lock \
+         /tmp/minios-cad.lock /tmp/minios-run-alert.lock \
+         /tmp/minios-loading.pid /tmp/minios-ytplay.lock
+  rm -f /tmp/minios-mp.cmd /tmp/minios-mp.pid /tmp/minios-player-bar.pid \
+        /tmp/minios-mp.out /tmp/minios-mp.done /tmp/minios-mp.fail \
+        /tmp/minios-mp.geom /tmp/minios-run-*.start \
+        /tmp/minios-tt-mp.cmd /tmp/minios-tt-mp.pid /tmp/minios-tt-player-bar.pid \
+        /tmp/minios-tt-mp.out /tmp/minios-tt-mp.done /tmp/minios-tt-mp.fail \
+        /tmp/minios-tt-mp.geom
+}
+
+kill_gui_apps() {
+  ask_mplayer_quit
+  # Close every registered app first (TikTok was missing from this list).
+  if [ -x /opt/minios/minios-apps ]; then
+    /opt/minios/minios-apps kill-all >>"$LOG" 2>&1 || true
+  elif [ -x /usr/local/bin/minios-apps ]; then
+    /usr/local/bin/minios-apps kill-all >>"$LOG" 2>&1 || true
+  fi
+  if [ -s /tmp/minios-tiktok.pid ]; then
+    kill "$(cat /tmp/minios-tiktok.pid)" 2>/dev/null || true
+  fi
+  if [ -s /tmp/minios-apps/tiktok.pid ]; then
+    kill "$(cat /tmp/minios-apps/tiktok.pid)" 2>/dev/null || true
+  fi
+  for pat in \
+    '/opt/minios/minios-tiktok' \
+    '/usr/local/bin/minios-tiktok' \
+    'minios-tiktok-search' \
+    'minios-tiktok-thumbs' \
+    'minios-tiktok-play' \
+    '/opt/minios/minios-tt-player-bar' \
+    '/usr/local/bin/minios-tt-player-bar' \
+    '/opt/minios/minios-tt-mplayer' \
+    '/usr/local/bin/minios-tt-mplayer' \
+    '/opt/minios/minios-text-browser' \
+    '/opt/minios/minios-quick-search' \
+    '/opt/minios/minios-player-bar' \
+    '/usr/local/bin/minios-player-bar' \
+    '/opt/minios/minios-mplayer' \
+    '/usr/local/bin/minios-mplayer' \
+    '/tmp/tcloop/mplayer-cli/usr/local/bin/mplayer' \
+    '/usr/local/bin/mplayer' \
+    '/usr/bin/mplayer' \
+    '/opt/minios/minios-youtube' \
+    '/usr/local/bin/minios-youtube' \
+    '/opt/minios/bin/fltube' \
+    '/usr/local/bin/fltube' \
+    '/opt/minios/minios-shorts-play' \
+    '/opt/minios/minios-yt-resolve' \
+    'yt-dlp' \
+    'firefox-bin' \
+    '/minios-firefox/'
+  do
+    pkill -f "$pat" 2>/dev/null || true
+  done
+  pkill -x minios-tiktok 2>/dev/null || true
+  pkill -x fltube 2>/dev/null || true
+  pkill -x mplayer 2>/dev/null || true
+  pkill -x firefox 2>/dev/null || true
+  pkill -x xmessage 2>/dev/null || true
+  kill_by_comm TERM
+  sleep 0.4
+  pkill -9 -x minios-tiktok 2>/dev/null || true
+  pkill -9 -f '/opt/minios/minios-tiktok' 2>/dev/null || true
+  pkill -9 -f '/opt/minios/minios-tt-player-bar' 2>/dev/null || true
+  pkill -9 -f '/usr/local/bin/minios-tt-player-bar' 2>/dev/null || true
+  pkill -9 -f '/opt/minios/minios-tt-mplayer' 2>/dev/null || true
+  pkill -9 -f '/opt/minios/minios-player-bar' 2>/dev/null || true
+  pkill -9 -f '/usr/local/bin/minios-player-bar' 2>/dev/null || true
+  pkill -9 -f '/opt/minios/minios-mplayer' 2>/dev/null || true
+  pkill -9 -f '/tmp/tcloop/mplayer-cli/usr/local/bin/mplayer' 2>/dev/null || true
+  pkill -9 -f '/opt/minios/bin/fltube' 2>/dev/null || true
+  pkill -9 -x fltube 2>/dev/null || true
+  pkill -9 -x mplayer 2>/dev/null || true
+  kill_by_comm KILL
+  # Launch wrappers sit in wait/reclaim and hold lock dirs after the window dies.
+  pkill -f '/usr/local/bin/minios-run' 2>/dev/null || true
+  pkill -f '/opt/minios/minios-run' 2>/dev/null || true
+  pkill -f 'minios-reclaim auto' 2>/dev/null || true
+  sleep 0.2
+  clear_run_locks
+}
+
+one_media_player_icon() {
+  ICONS=/usr/local/tce.icons
+  [ -f "$ICONS" ] || return 0
+  tmp=/tmp/tce.icons.oneplayer
+  seen=0
+  icon=""
+  title=""
+  while IFS= read -r line; do
+    case "$line" in
+      'i: '*) icon=${line#i: } ;;
+      't: '*) title=${line#t: } ;;
+      'c: '*)
+        case "$line" in
+          *minios-player*)
+            if [ "$seen" -eq 0 ]; then
+              echo "i: $icon"
+              echo "t: Media Player"
+              echo "$line"
+              seen=1
+            fi
+            ;;
+          *)
+            echo "i: $icon"
+            echo "t: $title"
+            echo "$line"
+            ;;
+        esac
+        icon=""
+        title=""
+        ;;
+      *) echo "$line" ;;
+    esac
+  done < "$ICONS" > "$tmp"
+  if ! cmp -s "$tmp" "$ICONS" 2>/dev/null; then
+    sudo -n cp "$tmp" "$ICONS" 2>/dev/null || cp "$tmp" "$ICONS" 2>/dev/null || true
+  fi
+  rm -f "$tmp"
+}
+
+{
+  echo "===== refresh desktop $(date -u) ====="
+  echo "user=$(id)"
+  touch /tmp/minios-refreshing
+  kill_gui_apps
+  echo "apps killed"
+  # Reclaim must not hang the Please wait popup. Run it in the background
+  # and give it 12 seconds, then continue.
+  if [ -x /opt/minios/minios-reclaim ]; then
+    sudo -n /opt/minios/minios-reclaim full >>"$LOG" 2>&1 &
+    rp=$!
+  elif [ -x /usr/local/bin/minios-reclaim ]; then
+    sudo -n /usr/local/bin/minios-reclaim full >>"$LOG" 2>&1 &
+    rp=$!
+  else
+    rp=""
+  fi
+  if [ -n "$rp" ]; then
+    i=0
+    while [ "$i" -lt 24 ] && kill -0 "$rp" 2>/dev/null; do
+      sleep 0.5
+      i=$((i + 1))
+    done
+    if kill -0 "$rp" 2>/dev/null; then
+      echo "reclaim timed out after 12s" >>"$LOG"
+      kill "$rp" 2>/dev/null || true
+    fi
+  fi
+  clear_run_locks
+  rm -f /tmp/minios-refreshing /tmp/minios-tiktok.pid /tmp/minios-tiktok.ready \
+        /tmp/minios-tt-mp.quit /tmp/minios-tt-playlist /tmp/minios-ttplay.mp4 \
+        /tmp/minios-mp.quit /tmp/minios-yt-playlist
+  rm -rf /tmp/minios-apps
+  : >/tmp/minios-notice.done
+  one_media_player_icon
+  if [ -x /opt/minios/setbg.sh ]; then
+    /opt/minios/setbg.sh || true
+  fi
+  xrefresh 2>/dev/null || true
+  if ! pgrep -x wbar >/dev/null 2>&1; then
+    if [ -x /usr/local/bin/wbar.sh ]; then
+      wbar.sh
+    fi
+  fi
+  echo done
+} >>"$LOG" 2>&1
+exit 0

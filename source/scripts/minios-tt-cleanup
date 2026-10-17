@@ -1,0 +1,45 @@
+#!/bin/sh
+# TikTok only. Do not touch YouTube, MiniOS player YouTube queue, X, or Wi-Fi.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-tt-cleanup.log
+echo "===== tt-cleanup $(date -u) =====" >>"$LOG"
+
+# Kill the recorded player before the wrapper. If the wrapper dies first,
+# the player is left running with nobody waiting on it.
+tt_stop_recorded_mplayer() {
+  mp=$(cat /tmp/minios-tt-mp.pid 2>/dev/null || true)
+  case "$mp" in
+    ''|*[!0-9]*)
+      echo "tt-cleanup no recorded player" >>"$LOG"
+      return 0
+      ;;
+  esac
+  if [ "$(cat /proc/$mp/comm 2>/dev/null)" = mplayer ]; then
+    kill -9 "$mp" 2>/dev/null || true
+    echo "tt-cleanup killed mplayer $mp" >>"$LOG"
+  fi
+}
+
+tt_stop_recorded_mplayer
+echo 1 >/tmp/minios-tt-mp.quit 2>/dev/null || true
+pkill -f /opt/minios/minios-tiktok-search 2>/dev/null || true
+pkill -f /opt/minios/minios-tiktok-thumbs 2>/dev/null || true
+pkill -f /opt/minios/minios-tiktok-play 2>/dev/null || true
+pkill -f /opt/minios/minios-tt-player-bar 2>/dev/null || true
+pkill -f /usr/local/bin/minios-tt-player-bar 2>/dev/null || true
+pkill -f /opt/minios/minios-tt-mplayer 2>/dev/null || true
+pkill -x minios-tiktok 2>/dev/null || true
+pkill -9 -f /opt/minios/minios-tt-player-bar 2>/dev/null || true
+pkill -9 -f /opt/minios/minios-tt-mplayer 2>/dev/null || true
+rm -rf /tmp/minios-tt-thumbs /tmp/minios-tt-dl
+rm -f /tmp/minios-tt-search.html /tmp/minios-tt-rows.txt /tmp/minios-tt-last.txt \
+      /tmp/minios-tt-cookies /tmp/minios-tt-reason.txt /tmp/minios-tt-chunk.html \
+      /tmp/minios-tt-oe.json /tmp/minios-tt-tw.json /tmp/minios-tiktok.ready \
+      /tmp/minios-tt-play.pid /tmp/minios-tt-thumbs.pid /tmp/minios-yt-tiktok \
+      /tmp/minios-tt-mp.cmd /tmp/minios-tt-mp.pid /tmp/minios-tt-mp.out \
+      /tmp/minios-tt-mp.done /tmp/minios-tt-mp.fail /tmp/minios-tt-mp.geom \
+      /tmp/minios-tt-mp.quit /tmp/minios-tt-player-bar.pid \
+      /tmp/minios-tt-picture.up \
+      /tmp/minios-tt-playlist /tmp/minios-ttplay.mp4 /tmp/minios-tt-dl.progress
+echo "tt-cleanup done" >>"$LOG"
+exit 0

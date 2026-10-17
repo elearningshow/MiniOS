@@ -1,0 +1,155 @@
+#!/bin/sh
+# Search: yt-dlp 2025.10.14 + python3.9 (known working on MA3).
+# Play (-g / --get-url / -o -): minios-yt-resolve. Never send search through 2026.08.19.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/minios/bin"
+
+RESOLVE=""
+if [ -x /opt/minios/minios-yt-resolve ]; then
+  RESOLVE=/opt/minios/minios-yt-resolve
+elif [ -x /usr/local/bin/minios-yt-resolve ]; then
+  RESOLVE=/usr/local/bin/minios-yt-resolve
+fi
+
+usb_log() {
+  if [ -x /opt/minios/minios-log-usb ]; then
+    sudo -n /opt/minios/minios-log-usb "$1" >/dev/null 2>&1 &
+  elif [ -x /usr/local/bin/minios-log-usb ]; then
+    sudo -n /usr/local/bin/minios-log-usb "$1" >/dev/null 2>&1 &
+  fi
+}
+
+show_loading() {
+  secs="${1:-15}"
+  shift
+  msg="${*:-Application is loading. Please wait.}"
+  printf '0\n%s\n' "$msg" >/tmp/minios-dl.progress
+  # In-player next-clip: the bar already shows status. Search/play from
+  # YouTube must still pop the loading notice (stale pid files used to hide it).
+  if [ -n "${MINIOS_QUEUE_PLAY:-}" ]; then
+    return
+  fi
+  if [ -x /opt/minios/minios-loading ]; then
+    /opt/minios/minios-loading "$secs" "$msg"
+  elif [ -x /usr/local/bin/minios-loading ]; then
+    /usr/local/bin/minios-loading "$secs" "$msg"
+  fi
+}
+
+# Search is slow on the Sempron. Same dock notice as the other icons.
+case " $* " in
+  *"ytsearch"*|*" --flat-playlist "*|*"tiktoksearch"*|*"youtube.com/results"*)
+    if [ -f /tmp/minios-yt-tiktok ]; then
+      show_loading 15 "TikTok search is loading. Please wait."
+    elif [ -f /tmp/minios-yt-shorts ]; then
+      show_loading 15 "Shorts search is loading. Please wait."
+    else
+      show_loading 15 "Search is loading. Please wait."
+    fi
+    ;;
+esac
+
+bar_up() {
+  pgrep -f '/opt/minios/minios-player-bar' >/dev/null 2>&1 && return 0
+  pgrep -f '/usr/local/bin/minios-player-bar' >/dev/null 2>&1 && return 0
+  return 1
+}
+
+start_player_bar() {
+  printf 'youtube\n' >/tmp/minios-player-mode
+  if [ -x /opt/minios/minios-player-bar ] && ! bar_up; then
+    /opt/minios/minios-player-bar --youtube >>/tmp/minios-mplayer.log 2>&1 &
+  elif [ -x /usr/local/bin/minios-player-bar ] && ! bar_up; then
+    /usr/local/bin/minios-player-bar --youtube >>/tmp/minios-mplayer.log 2>&1 &
+  fi
+}
+
+case " $* " in
+  *" -g "*|*" --get-url "*)
+    if [ -z "$RESOLVE" ]; then
+      echo "minios-yt-resolve missing" >&2
+      exit 127
+    fi
+    if [ -n "${MINIOS_QUEUE_PLAY:-}" ] && [ -f /tmp/minios-mp.quit ]; then
+      echo "user quit, skip resolve" >>/tmp/minios-yt-resolve.log
+      exit 1
+    fi
+    if [ -z "${MINIOS_QUEUE_PLAY:-}" ]; then
+      rm -f /tmp/minios-mp.quit
+    fi
+    PLAYLOCK=/tmp/minios-ytplay.lock
+    # comm is 15 chars: pgrep -x minios-player-bar never matches.
+    # A leftover lock after a failed play used to abort and flash the
+    # YouTube "Video is loading" layer instead of MiniOS Media Player.
+    if [ -d "$PLAYLOCK" ] && ! bar_up && \
+       ! pgrep -f /opt/minios/minios-yt-resolve >/dev/null 2>&1; then
+      rm -rf "$PLAYLOCK"
+      echo "cleared stale play lock" >>/tmp/minios-yt-resolve.log
+    fi
+    if ! mkdir "$PLAYLOCK" 2>/dev/null; then
+      if bar_up || pgrep -f /opt/minios/minios-yt-resolve >/dev/null 2>&1; then
+        printf '10\nLoading next video\n' >/tmp/minios-dl.progress
+        echo "play lock reused" >>/tmp/minios-yt-resolve.log
+      else
+        rm -rf "$PLAYLOCK"
+        mkdir "$PLAYLOCK" 2>/dev/null || true
+        echo "play lock reset" >>/tmp/minios-yt-resolve.log
+      fi
+    fi
+    trap 'rmdir /tmp/minios-ytplay.lock 2>/dev/null || rm -rf /tmp/minios-ytplay.lock' EXIT
+    rm -f /tmp/minios-mp.fail /tmp/minios-mp.pid
+    echo $$ >/tmp/minios-dl.pid
+    printf '0\nStarting download\n' >/tmp/minios-dl.progress
+    if [ -x /opt/minios/minios-loading ]; then
+      /opt/minios/minios-loading stop >/dev/null 2>&1 || true
+    fi
+    if [ -z "${MINIOS_QUEUE_PLAY:-}" ] && [ ! -f /tmp/minios-mp.quit ]; then
+      start_player_bar
+    fi
+    got=$("$RESOLVE" "$@")
+    rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$got" ]; then
+      echo fail >/tmp/minios-mp.fail
+      echo "resolve fail rc=$rc" >>/tmp/minios-yt-resolve.log
+    fi
+    [ -n "$got" ] && printf '%s\n' "$got"
+    usb_log play
+    exit "$rc"
+    ;;
+esac
+
+# FLTube fallback pipes yt-dlp -o - into mplayer. Emit the resolved media bytes.
+case " $* " in
+  *" -o - "*|*" --output - "*)
+    if [ -z "$RESOLVE" ]; then
+      echo "minios-yt-resolve missing" >&2
+      exit 127
+    fi
+    got=$("$RESOLVE" "$@") || exit 1
+    [ -n "$got" ] || exit 1
+    if [ -f "$got" ]; then
+      exec cat "$got"
+    fi
+    if command -v wget >/dev/null 2>&1; then
+      exec wget -q -O - -U "Mozilla/5.0 (X11; Linux i686) MiniOS/0.2.32" "$got"
+    fi
+    exec python3 -c 'import sys,ssl,urllib.request
+u=sys.argv[1]
+r=urllib.request.urlopen(urllib.request.Request(u,headers={"User-Agent":"Mozilla/5.0 MiniOS/0.2.32"}),context=ssl._create_unverified_context())
+while True:
+    b=r.read(65536)
+    if not b: break
+    sys.stdout.buffer.write(b) if hasattr(sys.stdout,"buffer") else sys.stdout.write(b)
+' "$got"
+    ;;
+esac
+
+OLD=/opt/minios/bin/yt-dlp-2025.10.14
+[ -f "$OLD" ] || OLD=/opt/minios/bin/yt-dlp-py39
+if [ -f "$OLD" ]; then
+  if [ -x /usr/local/bin/python3.9 ]; then
+    exec /usr/local/bin/python3.9 "$OLD" "$@"
+  fi
+  exec python3 "$OLD" "$@"
+fi
+echo "yt-dlp 2025.10.14 missing" >&2
+exit 127

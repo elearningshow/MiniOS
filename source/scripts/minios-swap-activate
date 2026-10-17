@@ -1,0 +1,99 @@
+#!/bin/sh
+# SWAP-AP-02: re-enable ALREADY created swap after the GUI is up.
+# Option C: enlarge/enable zram AND the disk file. Never create a new file
+# unless the configured path already exists. Never format.
+# Never call this from bootlocal during X start.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+CONF=/opt/minios/swap.conf
+LOG=/tmp/minios-swap-activate.log
+
+[ -f "$CONF" ] || exit 0
+grep -q '^PERSIST=1' "$CONF" 2>/dev/null || exit 0
+
+TYPE=$(awk -F= '/^TYPE=/{print $2; exit}' "$CONF")
+PATHF=$(awk -F= '/^PATH=/{print $2; exit}' "$CONF")
+SIZE=$(awk -F= '/^SIZE=/{print $2; exit}' "$CONF")
+ZRAMF=$(awk -F= '/^ZRAM=/{print $2; exit}' "$CONF")
+ZRAM_SIZE=$(awk -F= '/^ZRAM_SIZE=/{print $2; exit}' "$CONF")
+FILEF=$(awk -F= '/^FILE=/{print $2; exit}' "$CONF")
+
+want_zram=0
+want_file=0
+case "$TYPE" in
+  both) want_zram=1; want_file=1 ;;
+  zram) want_zram=1 ;;
+  file) want_file=1 ;;
+  *)
+    [ "$ZRAMF" = 1 ] && want_zram=1
+    [ "$FILEF" = 1 ] && want_file=1
+    [ -n "$PATHF" ] && want_file=1
+    ;;
+esac
+[ "$ZRAMF" = 0 ] && want_zram=0
+[ "$FILEF" = 0 ] && want_file=0
+
+{
+  echo "swap-activate $(date) type=$TYPE zram=$want_zram file=$want_file"
+  # Wait until X is up so we do not compete with desktop start.
+  i=0
+  while [ ! -e /tmp/.X11-unix/X0 ] && [ "$i" -lt 60 ]; do
+    sleep 1
+    i=$((i + 1))
+  done
+  sleep 15
+
+  if [ "$want_zram" = 1 ]; then
+    echo "keep existing zram size (SWAP-TUNE: do not grow)"
+    modprobe zram 2>/dev/null || true
+    [ -e /sys/class/zram-control/hot_add ] && cat /sys/class/zram-control/hot_add >/dev/null 2>&1 || true
+    if [ -d /sys/block/zram0 ] || [ -b /dev/zram0 ]; then
+      cur=$(awk 'NR>1 && $1 ~ /zram/ { s+=$3 } END { printf "%d", s/1024 }' /proc/swaps 2>/dev/null)
+      [ -n "$cur" ] || cur=0
+      if [ "$cur" -gt 0 ]; then
+        echo "zram already ${cur}M — keep size"
+      else
+        mkswap /dev/zram0 2>/dev/null || true
+        if swapon -p 100 /dev/zram0 2>/dev/null || swapon /dev/zram0; then
+          echo "zram re-enabled at existing size pri=100"
+        else
+          echo "zram re-enable failed"
+        fi
+      fi
+    else
+      echo "zram not present — skip"
+    fi
+  fi
+
+  if [ "$want_file" = 1 ] && [ -n "$PATHF" ]; then
+    if grep -q "$PATHF" /proc/swaps 2>/dev/null; then
+      echo "file already active $PATHF"
+    else
+      if [ ! -f "$PATHF" ]; then
+        dir=$(dirname "$PATHF")
+        mkdir -p "$dir"
+        if [ "$dir" = /mnt/internal ]; then
+          for p in /dev/sda1 /dev/sda2 /dev/hda1 /dev/hda2; do
+            [ -b "$p" ] || continue
+            mount -t ntfs3 "$p" /mnt/internal 2>/dev/null && break
+            mount "$p" /mnt/internal 2>/dev/null && break
+          done
+        fi
+      fi
+      if [ -f "$PATHF" ]; then
+        chmod 600 "$PATHF"
+        if swapon -p 1 "$PATHF" 2>/dev/null || swapon "$PATHF"; then
+          echo "file re-enabled $PATHF pri=1"
+        else
+          echo "file swapon failed $PATHF"
+        fi
+      else
+        echo "file re-enable failed path=$PATHF (not created at boot)"
+      fi
+    fi
+  fi
+  echo "after: $(awk '/^SwapTotal:/ { printf "%d", $2/1024 }' /proc/meminfo)M"
+  if [ -x /opt/minios/minios-swap-tune ]; then
+    /opt/minios/minios-swap-tune || true
+  fi
+  cat /proc/swaps 2>/dev/null || true
+} >>"$LOG" 2>&1

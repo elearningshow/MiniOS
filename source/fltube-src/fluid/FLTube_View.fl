@@ -1,0 +1,374 @@
+# data file for the Fltk User Interface Designer (fluid)
+version 1.0404
+i18n_type 1
+i18n_include {<libintl.h>}
+i18n_conditional {}
+i18n_gnu_function _
+i18n_gnu_static_function gettext_noop
+header_name {.h}
+code_name {.cxx}
+comment {/*
+ * Copyright (C) 2025-2026 - FLtube
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License, version 3, as published
+ * by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
+ */} {in_source in_header
+}
+
+decl {\#include "../include/custom_widgets.h"} {public global
+}
+
+declblock {\#ifndef GETTEXT_MACROS_H} {open public map 3 after {\#endif}
+} {
+  decl {\#define GETTEXT_MACROS_H} {public global
+  }
+  decl {\#define _(String) gettext(String)} {public global
+  }
+  decl {\#define ng_(SINGULAR, PLURAL, COUNT) ngettext(SINGULAR, PLURAL, COUNT)} {public global
+  }
+}
+
+widget_class FLTubeMainWindow {
+  label FLTube open
+  xywh {0 0 593 540}
+  class Fl_Double_Window visible
+} {
+  Fl_Button about_bttn {
+    label Help
+    tooltip {Show info about this application and some help of how to use it.} xywh {521 6 64 22}
+  }
+  Fl_Menu_Bar options_menu {
+    xywh {434 6 80 22}
+  } {
+    Submenu {} {
+      label Options open
+      xywh {0 0 100 20}
+    } {
+      Submenu {} {
+        label Quality open
+        xywh {0 0 100 20}
+      } {
+        MenuItem quality_240_bttn {
+          label 240p
+          user_data 240
+          xywh {0 0 100 20} type Radio
+        }
+        MenuItem quality_360_bttn {
+          label 360p
+          user_data 360
+          xywh {0 0 100 20} type Radio
+        }
+        MenuItem quality_480_bttn {
+          label 480p
+          user_data 480
+          xywh {0 0 100 20} type Radio
+        }
+        MenuItem quality_720_bttn {
+          label 720p
+          user_data 720
+          xywh {0 0 100 20} type Radio
+        }
+        MenuItem quality_1080_bttn {
+          label 1080p
+          user_data 1080
+          xywh {0 0 100 20} type Radio
+        }
+      }
+      Submenu {} {
+        label {Navigation History}
+        xywh {0 0 100 20}
+      } {
+        MenuItem history_clearall_bttn {
+          label {Clear all}
+          xywh {0 0 100 20}
+        }
+        MenuItem history_pause_bttn {
+          label {Stop recording}
+          xywh {0 0 100 20}
+        }
+        MenuItem history_unpause_bttn {
+          label {Start recording}
+          xywh {0 0 100 20}
+        }
+      }
+      Submenu {} {
+        label Cache
+        xywh {0 0 100 20}
+      } {
+        MenuItem cache_clearall_bttn {
+          label {Clear all}
+          tooltip {Clear all data saved in cache.} xywh {0 0 100 20}
+        }
+        MenuItem cache_pause_bttn {
+          label {Stop recording}
+          tooltip aaaaaaaaaaaaaaaa xywh {0 0 100 20}
+        }
+        MenuItem cache_unpause_bttn {
+          label {Start recording}
+          tooltip aaaaaaaaaaaaaaaa xywh {0 0 100 20}
+        }
+      }
+      MenuItem check_update_bttn {
+        label {Check for updates}
+        xywh {0 0 100 20}
+      }
+    }
+  }
+  Fl_Tabs central_tabs {
+    xywh {9 28 576 92}
+  } {
+    Fl_Group searchbox_tab {
+      label {Search box}
+      user_data {"SEARCHVIDEOS_TAB"} open
+      tooltip {Search videos at this section.} xywh {9 56 576 64} box UP_FRAME selection_color 47 labelfont 1 align 5
+    } {
+      Fl_Input search_term_or_url {
+        label {Term/URL  }
+        tooltip {Enter a search term for search or a valid Youtube URL. TIP: use the Up and Down arrow keys to navigate previous search terms.} xywh {110 63 450 24} align 132
+        class SearchInput
+      }
+      Fl_Button do_search_bttn {
+        label {Go &search!}
+        user_data search_term_or_url
+        tooltip {If search by URL, it must be a complete one (i.e. https://youtu.be/12345)...} xywh {227 90 150 22}
+      }
+      Fl_Button next_search_term_bttn {
+        tooltip {Navigate next search terms in history. Or use Up arrow key.} xywh {561 60 18 14} down_box DOWN_BOX labelsize 11
+      }
+      Fl_Button prev_search_term_bttn {
+        tooltip {Navigate previous search terms in history. Or use Down arrow key.} xywh {561 76 18 14} down_box DOWN_BOX labelsize 11
+      }
+    }
+    Fl_Group videolists_tab {
+      label {My Lists}
+      user_data {"VIDEOLISTS_TABS"} open
+      tooltip {Lookup your lists of videos at this section (History, Liked, etc...).} xywh {9 56 576 64} box UP_FRAME selection_color 47 labelfont 1 hide
+    } {
+      Fl_Choice videolist_selector {
+        label {Lists  } open
+        xywh {89 63 480 24} down_box BORDER_BOX
+      } {}
+    }
+  }
+  Fl_Group search_result_selectors {open
+    xywh {10 126 578 380} box THIN_UP_BOX
+  } {
+    Fl_Box no_videos_list_warn {
+      label {This list currently has no videos.} selected
+      xywh {40 280 518 72} labelfont 3 hide
+    }
+  }
+  Fl_Group pagination_controls {open
+    xywh {9 508 577 30}
+  } {
+    Fl_Button first_page_bttn {
+      label {<l}
+      tooltip {Go to the first page.} xywh {10 510 18 23}
+    }
+    Fl_Button previous_results_bttn {
+      label {<&Previous}
+      tooltip {Get previous results of current search results set.} xywh {30 510 115 23}
+    }
+    Fl_Button next_results_bttn {
+      label {&Next>}
+      tooltip {Get following results of current search results set.} xywh {450 510 115 23}
+    }
+    Fl_Button last_page_bttn {
+      label {l>}
+      tooltip {Go to the last loaded page.} xywh {567 510 18 23}
+    }
+    Fl_Box pagination_status_info {
+      tooltip {Current page / Total of pages.} xywh {240 512 115 23}
+    }
+  }
+}
+
+widget_class VideoInfo {open
+  xywh {0 0 577 91} hide position_relative
+} {
+  Fl_Button thumbnail {
+    tooltip {Click to stream the video (preview it)...} xywh {6 5 95 80}
+  }
+  Fl_Box thumbnail_overlay {
+    tooltip {This video is currently played...} xywh {6 5 95 80} hide
+  }
+  Fl_Box views_spectators {
+    tooltip {Total video views, or if live current count of concurrent spectators.} xywh {105 43 110 20} align 372
+  }
+  Fl_Box is_live_image {
+    tooltip {The video is live.} xywh {220 43 40 20} align 288 hide
+  }
+  Fl_Box already_viewed_icon {
+    tooltip {You have view this video in the past.} xywh {268 43 20 20} align 288
+  }
+  Fl_Button like_icon_bttn {
+    tooltip {Press to mark the video as "Liked".} xywh {295 43 20 20} box NO_BOX down_box THIN_UP_FRAME
+  }
+  Fl_Button watch_later_bttn {
+    tooltip {Add this video to the "Watch Later" video list.} xywh {322 43 20 20} box NO_BOX down_box THIN_UP_FRAME
+  }
+  Fl_Button cache_bttn {
+    xywh {535 43 20 20} box NO_BOX down_box THIN_UP_FRAME hide
+  }
+  Fl_Box title {
+    xywh {105 6 435 37} labelfont 1 align 213
+  }
+  Fl_Button remove_bttn {
+    tooltip {Click to remove video from current list.} xywh {538 7 16 16} down_box DOWN_BOX hide deactivate
+  }
+  Fl_Box duration {
+    tooltip {Duration expressed as H:MM:SS.} xywh {105 65 70 20} labelfont 2 align 20
+  }
+  Fl_Box uploadDate {
+    tooltip {Video upload date.} xywh {190 65 95 20} labelfont 2 align 20
+  }
+  Fl_Button userUploader {
+    tooltip {Click to list all channel's video.} xywh {295 65 260 20} labelfont 2 align 20
+  }
+}
+
+widget_class TinyMessageWindow {
+  label Error
+  xywh {632 398 649 100} hide
+  class Fl_Double_Window modal
+} {
+  Fl_Box error_label {
+    xywh {30 15 590 45} align 128
+  }
+  Fl_Button close_bttn {
+    label {Close and exit}
+    xywh {267 70 115 25} shortcut 0x80063
+  }
+}
+
+widget_class TinyChoiceWindow {
+  label Warn
+  xywh {620 599 649 118} hide
+  class Fl_Double_Window modal
+} {
+  Fl_Box choice_label {
+    xywh {30 15 590 45} align 128
+  }
+  Fl_Button accept_bttn {
+    label Accept
+    xywh {180 85 115 25} shortcut 0x80061
+  }
+  Fl_Button cancel_bttn {
+    label Cancel
+    xywh {334 85 115 25} shortcut 0x80063
+  }
+  Fl_Check_Button warnme_again_check {
+    label {Don't warn me again and ACCEPT always.}
+    tooltip {Check if don't want to be warn again, assuming all risks.} xywh {30 60 590 20} down_box DOWN_BOX labelfont 2 labelsize 12
+  }
+}
+
+widget_class HelpFLTubeWindow {
+  label {FLTube Help}
+  xywh {560 288 480 352} hide
+  class Fl_Double_Window modal
+} {
+  Fl_Group {} {
+    xywh {15 14 448 144}
+  } {
+    Fl_Box hlp_fltube_img {
+      xywh {15 21 128 128}
+    }
+    Fl_Box hlp_app_name {
+      label FLTube
+      xywh {153 14 310 24} labelfont 1 labelsize 20 labelcolor 32 align 21
+    }
+    Fl_Box about_version {
+      label {Version x.y.z}
+      xywh {153 38 302 19} labelfont 2 align 21
+    }
+    Fl_Box {} {
+      label {Watch YouTube videos in your very old PC.}
+      xywh {153 57 310 21} labelsize 15 align 149
+    }
+    Fl_Box {} {
+      label {Technologies:}
+      xywh {153 86 114 24} align 22
+    }
+    Fl_Box {} {
+      label {Source code at:}
+      xywh {153 110 110 20} align 22
+    }
+    Fl_Box {} {
+      label {Licensed under GNU GPL v3.0.}
+      xywh {153 132 309 18} align 22
+    }
+    Fl_Button hlp_fltk_link {
+      label FLTK
+      tooltip {Click to open FLTK official website.} xywh {271 87 48 23} box NO_BOX color 50 labelcolor 137 align 22
+    }
+    Fl_Button hlp_source_code {
+      label {gitlab.com/facuA/fltube}
+      tooltip {Click to open FLTube repository.} xywh {269 110 180 19} box NO_BOX color 50 labelcolor 137 align 22
+    }
+    Fl_Button hlp_ytdlp_link {
+      label {yt-dlp}
+      tooltip {Click to open yt-dlp official website.} xywh {333 88 52 22} box NO_BOX labelcolor 137 align 22
+    }
+    Fl_Button hlp_cpp_link {
+      label {C++}
+      tooltip {Click to open C++ official website.} xywh {399 87 38 23} box NO_BOX labelcolor 137 align 22
+    }
+  }
+  Fl_Tabs help_info_tabs {open
+    xywh {15 158 450 183}
+  } {
+    Fl_Group howtouse_tab {
+      label {How to use} open
+      xywh {15 183 450 158} selection_color 47 labelfont 1
+    } {
+      Fl_Text_Display howtouse_txt {
+        xywh {19 189 442 148} box NO_BOX color 49 align 129
+      }
+    }
+    Fl_Group shortcuts_tab {
+      label Shortcuts open
+      xywh {15 183 450 158} selection_color 47 labelfont 1 hide
+    } {
+      Fl_Text_Display shortcuts_txt {
+        xywh {19 189 442 148} box NO_BOX color 49 align 129
+      }
+    }
+    Fl_Group config_tab {
+      label Configuration open
+      xywh {15 183 450 158} selection_color 47 labelfont 1 hide
+    } {
+      Fl_Text_Display config_txt {
+        xywh {19 189 442 148} box NO_BOX color 49 align 129
+      }
+    }
+    Fl_Group authors_tab {
+      label Authors open
+      xywh {15 183 450 158} selection_color 47 labelfont 1 hide
+    } {
+      Fl_Text_Display authors_txt {
+        xywh {19 189 442 148} box NO_BOX color 49 align 129
+      }
+    }
+  }
+}
+
+widget_class InitialLoadingWindow {
+  label {Loading FLTube}
+  xywh {0 0 236 180} hide
+  class Fl_Double_Window modal
+} {
+  Fl_Box fltube_logo {
+    label {LOADING...}
+    tooltip {Please wait until the application data is loaded. This may take a little while...} xywh {5 13 225 125} labelfont 1
+  }
+  Fl_Box loading_about_data {
+    xywh {10 145 220 30} labelfont 2 labelsize 12
+  }
+}

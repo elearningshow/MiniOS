@@ -1,0 +1,28 @@
+#!/bin/sh
+# Dock command. Opens the chat window after the answer helper is ready.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-ai.log
+helper_py() {
+  for p in /usr/local/bin/python3.9 /usr/bin/python3 /usr/local/bin/python3; do
+    if [ -x "$p" ] && "$p" -c 'print(1)' >/dev/null 2>&1; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+if ! helper_py >/dev/null 2>&1; then
+  if [ -x /opt/minios/minios-load-tcz ]; then
+    /opt/minios/minios-load-tcz python3.9 >>"$LOG" 2>&1 || true
+  fi
+fi
+if helper_py >/dev/null 2>&1; then
+  echo ok >/tmp/minios-ai.helper
+else
+  rm -f /tmp/minios-ai.helper
+  echo "helper missing" >>"$LOG"
+fi
+if [ -x /opt/minios/minios-ai-chat ]; then
+  exec /opt/minios/minios-ai-chat
+fi
+exec /usr/local/bin/minios-ai-chat

@@ -1,0 +1,22 @@
+#!/bin/sh
+# Small key card while mplayer is open. Killed by minios-mplayer on exit.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+MSG="Space pause    9 / 0 volume    m mute"
+PIDF=/tmp/minios-player-keys.pid
+if [ "${1:-}" = "stop" ]; then
+  if [ -f "$PIDF" ]; then
+    kill "$(cat "$PIDF")" 2>/dev/null || true
+    rm -f "$PIDF"
+  fi
+  exit 0
+fi
+if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; then
+  exit 0
+fi
+# xmessage only. aterm can steal focus from mplayer on flwm.
+if command -v xmessage >/dev/null 2>&1; then
+  xmessage -geometry +8-40 -timeout 86400 "$MSG" &
+  echo $! >"$PIDF"
+fi
+exit 0

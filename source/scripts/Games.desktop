@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Games
+Comment=Small games loaded for one play, then unloaded
+Exec=/usr/local/bin/minios-games
+Icon=/opt/minios/games.png
+Terminal=false
+Categories=Game;
+StartupNotify=false

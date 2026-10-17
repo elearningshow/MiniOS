@@ -1,0 +1,184 @@
+#!/bin/sh
+# Play one station. This script does not call the YouTube or TikTok players.
+# It starts the mplayer program already on the USB and records only its own pid.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+URL="${1:-}"
+LOG=/tmp/minios-st-play.log
+PIDF=/tmp/minios-st-play.pid
+{
+  echo "===== streaming-play $(date -u) ====="
+  echo "url=$URL"
+} >>"$LOG"
+case "$URL" in
+  http://*|https://*) ;;
+  *)
+    echo "bad url" >>"$LOG"
+    exit 1
+    ;;
+esac
+old=$(tr -dc '0-9' <"$PIDF" 2>/dev/null || true)
+if [ -n "$old" ] && [ "$old" != "$$" ]; then
+  kill "$old" 2>/dev/null || true
+  sleep 0.2
+  kill -9 "$old" 2>/dev/null || true
+fi
+REAL=""
+for cand in /tmp/tcloop/mplayer-cli/usr/local/bin/mplayer /usr/bin/mplayer /usr/local/bin/mplayer; do
+  [ -x "$cand" ] || continue
+  if head -n 1 "$cand" 2>/dev/null | grep -q '^#!'; then
+    continue
+  fi
+  REAL=$cand
+  break
+done
+if [ -z "$REAL" ]; then
+  echo "mplayer missing" >>"$LOG"
+  exit 1
+fi
+echo "mplayer=$REAL" >>"$LOG"
+
+# YouTube brings the sound card up and points at the codec libraries.
+# Without that, mplayer quits at once and the window says the station stopped.
+st_ready_player() {
+  if [ -x /opt/minios/minios-sound-up ]; then
+    sudo -n /opt/minios/minios-sound-up libs-only >>"$LOG" 2>&1 || \
+      /opt/minios/minios-sound-up libs-only >>"$LOG" 2>&1 || true
+    if [ ! -e /dev/snd/pcmC0D0p ]; then
+      sudo -n /opt/minios/minios-sound-up >>"$LOG" 2>&1 || \
+        /opt/minios/minios-sound-up >>"$LOG" 2>&1 || true
+    fi
+  fi
+  LD_LIBRARY_PATH="/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  for d in /tmp/tcloop/*/usr/local/lib /tmp/tcloop/*/usr/lib; do
+    [ -d "$d" ] || continue
+    LD_LIBRARY_PATH="$d:$LD_LIBRARY_PATH"
+  done
+  export LD_LIBRARY_PATH
+  echo "snd=$(ls /dev/snd 2>&1 | tr '\n' ' ')" >>"$LOG"
+  rm -f /tmp/minios-st-cmd
+  mkfifo /tmp/minios-st-cmd || return 1
+  echo "fifo ready" >>"$LOG"
+}
+
+# A picture playlist names several sizes. Play the smallest one.
+st_pick_low_hls() {
+  st_in="$1"
+  st_body=/tmp/minios-st-hls.txt
+  case "$st_in" in
+    *.m3u8*) ;;
+    *)
+      printf '%s\n' "$st_in"
+      return 0
+      ;;
+  esac
+  rm -f "$st_body"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS --connect-timeout 4 --max-time 8 -A "MiniOS/0.2.248" -o "$st_body" "$st_in" >>"$LOG" 2>&1 || true
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "$st_body" --user-agent="MiniOS/0.2.248" --timeout=8 "$st_in" >>"$LOG" 2>&1 || true
+  fi
+  if [ ! -s "$st_body" ] || ! grep -q 'EXT-X-STREAM-INF' "$st_body" 2>/dev/null; then
+    rm -f "$st_body"
+    printf '%s\n' "$st_in"
+    return 0
+  fi
+  st_py=""
+  if [ -x /usr/local/bin/python3.9 ]; then
+    st_py=/usr/local/bin/python3.9
+  elif command -v python3 >/dev/null 2>&1; then
+    st_py=$(command -v python3)
+  fi
+  st_out=""
+  if [ -n "$st_py" ]; then
+    st_out=$("$st_py" - "$st_body" "$st_in" <<'PY' 2>>"$LOG" || true
+import sys
+from urllib.parse import urljoin
+body, master = open(sys.argv[1], "r", errors="replace").read().splitlines(), sys.argv[2]
+best = None
+pending = None
+for line in body:
+    s = line.strip()
+    if s.startswith("#EXT-X-STREAM-INF"):
+        rate = 10 ** 12
+        for part in s.split(","):
+            if "BANDWIDTH=" in part:
+                num = part.split("BANDWIDTH=", 1)[1]
+                num = "".join(ch for ch in num if ch.isdigit())
+                if num:
+                    rate = int(num)
+        pending = rate
+        continue
+    if not s or s.startswith("#"):
+        continue
+    if pending is None:
+        continue
+    if best is None or pending < best[0]:
+        best = (pending, urljoin(master, s))
+    pending = None
+if best:
+    sys.stdout.write(best[1])
+PY
+)
+  fi
+  rm -f "$st_body"
+  if [ -n "$st_out" ]; then
+    printf '%s\n' "$st_out"
+  else
+    printf '%s\n' "$st_in"
+  fi
+}
+
+# Picture position comes from the Streaming player window.
+# A window id hid the picture on this laptop, so the picture is placed
+# with the same borderless geometry the TikTok player uses.
+st_geom=""
+if [ -s /tmp/minios-st-geom ]; then
+  IFS= read -r st_geom < /tmp/minios-st-geom || true
+  st_geom=$(printf '%s' "$st_geom" | tr -dc '0-9x+')
+fi
+case "$st_geom" in
+  *x*+*+*) ;;
+  *) st_geom="" ;;
+esac
+
+st_exec_picture() {
+  st_url="$1"
+  if [ -n "$st_geom" ]; then
+    echo "geom=$st_geom" >>"$LOG"
+    exec "$REAL" -cache 768 -demuxer lavf -prefer-ipv4 -user-agent MiniOS/0.2.252 \
+      -slave -input file=/tmp/minios-st-cmd -vo x11 -ao alsa,oss,null \
+      -geometry "$st_geom" -noborder -zoom -xy 480 \
+      "$st_url" >>"$LOG" 2>&1
+  fi
+  echo "geom=none" >>"$LOG"
+  exec "$REAL" -cache 768 -demuxer lavf -prefer-ipv4 -user-agent MiniOS/0.2.252 \
+    -slave -input file=/tmp/minios-st-cmd -vo x11 -ao alsa,oss,null -xy 480 \
+    "$st_url" >>"$LOG" 2>&1
+}
+
+echo $$ >"$PIDF"
+st_ready_player || exit 1
+case "$URL" in
+  *.m3u8*|*.smil*)
+    PLAYURL=$(st_pick_low_hls "$URL")
+    echo "tv url=$PLAYURL" >>"$LOG"
+    st_exec_picture "$PLAYURL"
+    ;;
+esac
+if [ -n "$st_geom" ]; then
+  echo "picture" >>"$LOG"
+  st_exec_picture "$URL"
+fi
+case "$URL" in
+  *.pls*|*.m3u|*.asx*)
+    echo "playlist" >>"$LOG"
+    exec "$REAL" -playlist -novideo -quiet -prefer-ipv4 -user-agent MiniOS/0.2.252 \
+      -slave -input file=/tmp/minios-st-cmd -ao alsa,oss,null -cache 256 \
+      "$URL" >>"$LOG" 2>&1
+    ;;
+  *)
+    exec "$REAL" -novideo -quiet -prefer-ipv4 -user-agent MiniOS/0.2.252 \
+      -slave -input file=/tmp/minios-st-cmd -ao alsa,oss,null -cache 256 \
+      -demuxer lavf "$URL" >>"$LOG" 2>&1
+    ;;
+esac

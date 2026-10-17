@@ -1,0 +1,46 @@
+#!/bin/sh
+# Open MiniOS Media Player. Local files are Add on the bar.
+# comm is 15 chars, so pgrep -x minios-player-bar never matches.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+BAR=/opt/minios/minios-player-bar
+[ -x "$BAR" ] || BAR=/usr/local/bin/minios-player-bar
+
+player_running() {
+  pgrep -f '/opt/minios/minios-player-bar' >/dev/null 2>&1 && return 0
+  pgrep -f '/usr/local/bin/minios-player-bar' >/dev/null 2>&1 && return 0
+  return 1
+}
+
+# Dock click is always a new empty local player. A leftover bar from
+# YouTube/TikTok made this script exit 0, which ran Refresh RAM and
+# never showed the player.
+if player_running; then
+  pkill -f '/opt/minios/minios-player-bar' 2>/dev/null || true
+  pkill -f '/usr/local/bin/minios-player-bar' 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 15 ] && player_running; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  pkill -9 -f '/opt/minios/minios-player-bar' 2>/dev/null || true
+fi
+# New dock session: no leftover YouTube search playlist or last clip.
+rm -f /tmp/minios-mp.quit /tmp/minios-yt-playlist /tmp/minios-yt-shorts \
+      /tmp/minios-yt-tiktok /tmp/minios-mp.geom \
+      /tmp/minios-ytplay.mp4 /tmp/minios-ytplay.audio \
+      /tmp/minios-ytplay.a.m4a /tmp/minios-ytplay.a.aac \
+      /tmp/minios-ytplay.sub /tmp/minios-ytplay.en.srt \
+      /tmp/minios-ytplay.en.vtt /tmp/minios-ytplay.srt
+rmdir /tmp/minios-ytplay.lock 2>/dev/null || true
+pkill -9 -f '/tmp/tcloop/mplayer-cli/usr/local/bin/mplayer' 2>/dev/null || true
+pkill -9 -x mplayer 2>/dev/null || true
+printf 'local\n' >/tmp/minios-player-mode
+if ! player_running; then
+  rm -f /tmp/minios-player-bar.pid
+fi
+if ! pgrep -f minios-yt-resolve >/dev/null 2>&1 && \
+   ! pgrep -f minios-shorts-play >/dev/null 2>&1; then
+  rm -f /tmp/minios-dl.progress
+fi
+exec "$BAR" --local

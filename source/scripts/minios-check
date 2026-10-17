@@ -1,0 +1,222 @@
+#!/bin/sh
+# Auto-run Action Plan 02 report. Photograph this window and send it back.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export HOME="${HOME:-/home/tc}"
+export DISPLAY="${DISPLAY:-:0}"
+export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+
+LOG=/tmp/minios-check.log
+STAMP=$(date 2>/dev/null || echo unknown)
+TITLE="MiniOS Action Plan 02 report — photograph this window"
+
+USB_ROOT=""
+for d in /mnt/*; do
+  if [ -d "$d/cde/optional" ] && [ -w "$d" ]; then
+    USB_ROOT="$d"
+    break
+  fi
+done
+
+ok()   { echo "OK: $*"; }
+fail() { echo "FAIL: $*"; }
+note() { echo "NOTE: $*"; }
+
+# --- live probes (read-only except module load / scsi rescan) ---
+probe_internal() {
+  for m in ata_generic ata_piix pata_amd pata_atiixp pata_via pata_sis \
+           pata_jmicron pata_serverworks ahci libata sd_mod sr_mod; do
+    modprobe "$m" 2>/dev/null || true
+  done
+  for h in /sys/class/scsi_host/host*/scan; do
+    [ -w "$h" ] || continue
+    echo "- - -" >"$h" 2>/dev/null || true
+  done
+  sleep 1
+}
+
+# Run probes before writing the report
+probe_internal
+[ -x /opt/minios/minios-startup-log ] && /opt/minios/minios-startup-log
+
+INTERNAL=""
+for d in /sys/block/sd* /sys/block/hd*; do
+  [ -d "$d" ] || continue
+  name=$(basename "$d")
+  size=$(cat "$d/size" 2>/dev/null || echo 0)
+  # ~160 GB IDE disk is much larger than a 2 GB live image
+  if [ "$size" -gt 200000000 ]; then
+    INTERNAL="/dev/$name"
+    INTERNAL_SECTORS="$size"
+    break
+  fi
+done
+
+BROWSER=""
+for b in netsurf dillo midori links; do
+  if command -v "$b" >/dev/null 2>&1; then
+    BROWSER="$b"
+    break
+  fi
+done
+
+WP=FAIL
+[ -f /tmp/minios-wallpaper.ok ] && WP=PASS
+grep -q 'SUCCESS feh --bg-scale\|SUCCESS hsetroot' /tmp/minios-poc-wallpaper.log 2>/dev/null && WP=PASS
+
+PERSIST=FAIL
+[ -d /tce ] || [ -L /etc/sysconfig/tcedir ] && PERSIST=PARTIAL
+[ -f /opt/minios/persist.stamp ] && PERSIST=PASS
+[ -n "$USB_ROOT" ] && [ -d "$USB_ROOT/tce" ] && PERSIST=READY
+
+SWAP=FAIL
+grep -q minios-swapfile /proc/swaps 2>/dev/null && SWAP=PASS
+[ -n "$(awk 'NR>1{print}' /proc/swaps 2>/dev/null)" ] && [ "$SWAP" = FAIL ] && SWAP=OTHER
+
+DISK=FAIL
+[ -n "$INTERNAL" ] && DISK=PASS
+
+BR=FAIL
+[ -n "$BROWSER" ] && BR=PASS
+
+{
+  echo "===================================================="
+  echo "  MiniOS Action Plan 02 — PHOTOGRAPH THIS WINDOW"
+  echo "  $STAMP"
+  echo "===================================================="
+  echo
+  echo "SCOREBOARD (read this first)"
+  echo "  wallpaper ........ $WP"
+  echo "  browser .......... $BR   ${BROWSER:-none found}"
+  echo "  persistence ...... $PERSIST"
+  echo "  internal disk .... $DISK   ${INTERNAL:-not seen}"
+  echo "  swap ............. $SWAP"
+  echo
+  echo "Send a photo of this whole window if anything is FAIL."
+  echo "Full text also saved as /tmp/minios-check.log and USB AP-02-REPORT.txt"
+  echo
+  echo "----- Phase 1: memory, disk, date -----"
+  echo "--- date ---"
+  date 2>/dev/null || true
+  echo "--- memory (free) ---"
+  free 2>/dev/null || cat /proc/meminfo | head -8
+  echo "--- disk space (df) ---"
+  df 2>/dev/null | head -20
+  echo
+
+  echo "----- Phase 2: persistence on the live USB -----"
+  if [ -n "$USB_ROOT" ]; then
+    ok "boot USB mounted at $USB_ROOT"
+    ls -ld "$USB_ROOT/tce" 2>/dev/null || note "no tce directory yet — run: sudo minios-persist"
+    [ -f "$USB_ROOT/tce/PERSISTENCE-ON.txt" ] && ok "PERSISTENCE-ON.txt present" \
+      || note "PERSISTENCE-ON.txt not present until minios-persist is run"
+  else
+    fail "boot USB (cde/optional) not found under /mnt"
+  fi
+  echo -n "tcedir: "
+  readlink /etc/sysconfig/tcedir 2>/dev/null || cat /etc/sysconfig/tcedir 2>/dev/null || echo "(unset)"
+  if [ -f /opt/minios/persist.stamp ]; then
+    ok "persist.stamp:"
+    cat /opt/minios/persist.stamp
+  else
+    note "no persist.stamp this boot (normal until you run minios-persist and reboot)"
+  fi
+  echo
+
+  echo "----- Phase 3: internal hard drive (never formatted) -----"
+  echo "--- /proc/partitions ---"
+  cat /proc/partitions
+  echo "--- block devices ---"
+  ls -l /dev/sd[a-z] /dev/hd[a-z] /dev/sd[a-z][0-9] /dev/hd[a-z][0-9] 2>/dev/null || note "no sd/hd nodes"
+  if [ -n "$INTERNAL" ]; then
+    ok "large disk (likely Samsung 160 GB): $INTERNAL sectors=${INTERNAL_SECTORS:-?}"
+  else
+    fail "no ~160 GB disk seen — BIOS may hide it, or more modules needed"
+    echo "--- dmesg disk hints ---"
+    dmesg 2>/dev/null | grep -iE 'ata|ide|samsung|hm160|sda|sdb|PATA' | tail -20 || true
+  fi
+  echo
+
+  echo "----- Phase 4: swap -----"
+  echo "--- /proc/swaps ---"
+  cat /proc/swaps 2>/dev/null || true
+  if [ -f /tmp/minios-swap.path ]; then
+    echo "recorded path:"
+    cat /tmp/minios-swap.path
+  fi
+  if grep -q minios-swapfile /proc/swaps 2>/dev/null; then
+    ok "minios-swapfile is active"
+  else
+    note "no swap file yet — after internal disk is visible run: sudo minios-swap"
+  fi
+  echo
+
+  echo "----- Phase 5: browser -----"
+  for b in netsurf dillo midori links lynx minios-browser; do
+    if command -v "$b" >/dev/null 2>&1; then
+      ok "$b -> $(command -v "$b")"
+    fi
+  done
+  if [ -n "$BROWSER" ]; then
+    ok "default launcher will use: $BROWSER"
+    echo "Start it with: minios-browser"
+  else
+    fail "no graphical browser in PATH"
+  fi
+  echo
+
+  echo "----- wallpaper (already solved — confirm behind this window) -----"
+  if [ "$WP" = PASS ]; then
+    ok "paint log shows success — is the mini-X image visible behind this window?"
+  else
+    fail "wallpaper paint not confirmed in log"
+    tail -8 /tmp/minios-poc-wallpaper.log 2>/dev/null || true
+  fi
+  echo
+
+  echo "----- wireless (already working — listed only, not reconfigured) -----"
+  iwconfig 2>/dev/null | head -12 || note "iwconfig empty"
+  echo
+
+  echo "===================================================="
+  echo "NEXT ON THIS MACHINE"
+  echo "  1) minios-browser              open a web page"
+  echo "  2) sudo minios-persist         then reboot once"
+  echo "  3) sudo minios-internal        if internal disk is FAIL"
+  echo "  4) sudo minios-swap            if swap is FAIL and disk is PASS"
+  echo "Do not install MiniOS onto the internal hard drive."
+  echo "===================================================="
+} >"$LOG" 2>&1
+
+# Copies for Windows after reboot / stick insert
+if [ -n "$USB_ROOT" ]; then
+  cp -f "$LOG" "$USB_ROOT/minios-check.log" 2>/dev/null || true
+  cp -f "$LOG" "$USB_ROOT/AP-02-REPORT.txt" 2>/dev/null || true
+  cp -f /tmp/startup.log "$USB_ROOT/startup.log" 2>/dev/null || true
+fi
+cp -f "$LOG" "$HOME/minios-check.log" 2>/dev/null || true
+
+if [ "${1:-}" = "--cli" ] || [ -z "${DISPLAY:-}" ]; then
+  cat "$LOG"
+  exit 0
+fi
+
+# Large photo-ready popup
+if command -v yad >/dev/null 2>&1; then
+  yad --text-info --title="$TITLE" \
+    --width=860 --height=580 --center \
+    --filename="$LOG" --fontname="Monospace 10" \
+    --button="OK:0" 2>/dev/null
+  exit 0
+fi
+if command -v aterm >/dev/null 2>&1; then
+  aterm -title "$TITLE" -geometry 108x42 \
+    -e sh -c "cat '$LOG'; echo; echo '--- Press Enter to close ---'; read x"
+  exit 0
+fi
+if command -v xterm >/dev/null 2>&1; then
+  xterm -T "$TITLE" -geometry 108x42 \
+    -e sh -c "cat '$LOG'; echo; echo Press Enter; read x"
+  exit 0
+fi
+cat "$LOG"
+exit 0

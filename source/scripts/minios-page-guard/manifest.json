@@ -1,0 +1,32 @@
+{
+  "manifest_version": 2,
+  "name": "MiniOS Page Guard",
+  "version": "1.0",
+  "description": "A few pictures, a loading note, and a text view for a page that does not display.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "minios-page-guard@minios",
+      "strict_min_version": "115.0"
+    }
+  },
+  "permissions": [
+    "tabs",
+    "webNavigation",
+    "webRequest",
+    "webRequestBlocking",
+    "browsingData",
+    "<all_urls>",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["guard.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
+}

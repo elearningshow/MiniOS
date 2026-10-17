@@ -1,0 +1,480 @@
+/*
+ * Copyright (C) 2025-2026 - FLtube
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License, version 3, as published
+ * by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
+ */
+
+#include "../include/fltube_utils.h"
+#include <string>
+
+/** Mapping FS_PERMISSION_NAMES to corresponding std::filesystem::perms. */
+static const std::map<SIMPLE_FS_PERMISSION, std::map<std::string, std::filesystem::perms>> perms_map = {
+    {CAN_READ,
+        {{"OWNER", std::filesystem::perms::owner_read}, {"GROUP", std::filesystem::perms::group_read}, {"OTHERS", std::filesystem::perms::others_read}}},
+    {CAN_WRITE,
+        {{"OWNER", std::filesystem::perms::owner_write}, {"GROUP", std::filesystem::perms::group_write}, {"OTHERS", std::filesystem::perms::others_write}}},
+    {CAN_EXECUTE,
+        {{"OWNER", std::filesystem::perms::owner_exec}, {"GROUP", std::filesystem::perms::group_exec}, {"OTHERS", std::filesystem::perms::others_exec}}},
+};
+
+/**
+ * Execute a system command and returns its output.
+ */
+std::string exec(const char* cmd) {
+    std::array<char, 128> buffer;
+    std::string result;
+    std::unique_ptr<FILE, int(*)(FILE*)> pipe(popen(cmd, "r"), pclose);
+
+    if (!pipe) {
+        printf(_("There was an error executing the following command: %s \n"), cmd);
+        printf(_("Closing the program due to an error.\n"));
+        exit(2);
+    }
+
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+        //printf("%s", buffer.data());
+        result += buffer.data();
+    }
+
+    return result;
+}
+
+/** Attempts to make a SIMPLE check if a text is an URL. */
+bool isUrl(const char* user_input) {
+    std::string input_text(user_input);
+    return (input_text.compare(0,7, HTTP_PREFIX) == 0 || input_text.compare(0,8, HTTPS_PREFIX) == 0);
+}
+
+
+
+/** Get the current date/time. The format is YYYY-MM-DD.HH:mm:ss. */
+const std::string currentDateTime() {
+    time_t     now = time(0);
+    struct tm  tstruct;
+    char       buf[80];
+    tstruct = *localtime(&now);
+    // Visit http://en.cppreference.com/w/cpp/chrono/c/strftime
+    // for more information about the date/time format
+    strftime(buf, sizeof(buf), "%Y-%m-%d.%X", &tstruct);
+
+    return buf;
+}
+
+/**  Get the $HOME system path, or (if not set) the default specified path, or TEMPORAL System path. */
+const char* getHomePathOr(const char* defaultPath) {
+    const char* target_dir;
+    if ((target_dir = getenv("HOME")) == NULL && !defaultPath) {
+        target_dir = std::filesystem::temp_directory_path().c_str();
+    }
+    return target_dir;
+}
+
+/** For an specified UID, return a list of its corresponding GIDs - group IDs. */
+std::vector<int> getUserGroupsIds(int uid){
+    // Original implementation at https://stackoverflow.com/a/57896725.
+    std::vector<int> user_groups = {};
+
+    struct passwd* pw = getpwuid(uid);
+    if(pw == NULL){
+        perror("getpwuid error: ");
+    } else {
+        int ngroups = 0;
+        //this call is just to get the correct ngroups
+        getgrouplist(pw->pw_name, pw->pw_gid, NULL, &ngroups);
+        __gid_t groups[ngroups];
+        //here we actually get the groups
+        getgrouplist(pw->pw_name, pw->pw_gid, groups, &ngroups);
+        for (int i = 0; i < ngroups; i++){
+            user_groups.push_back(getgrgid(groups[i])->gr_gid);
+        }
+    }
+    return user_groups;
+}
+
+/** Check if a target directory has the requested permissions defined at @FS_PERMISSION_NAMES. */
+bool checkDirectoryPermissions(const char* target_directory, std::array<SIMPLE_FS_PERMISSION,3> target_perms){
+    using namespace std::filesystem;
+    if(target_directory && exists(target_directory)){
+        //Get the user and group id for the user running the process for this program.
+        uid_t process_user_id = geteuid();
+
+        //Get user and group for target directory
+        struct stat fileStat;
+        if( stat(target_directory, &fileStat) < 0 ){
+            //Stat failed for some reason...
+            printf("Cannot make stat() over the directory %s\n", target_directory);
+            return false;
+        }
+
+        // printf("DIR: %s (user: %d, group: %d)\n", target_directory, fileStat.st_uid, fileStat.st_gid);
+
+        bool isOwner = (process_user_id == fileStat.st_uid); //True if process user is owner of directory.
+        bool isInGroup = false; //True if process user belong to the directory's group.'
+        for (int gid: getUserGroupsIds(process_user_id)){
+            if(gid == fileStat.st_gid){
+                isInGroup = true;
+                break;
+            }
+        }
+
+        // Get the file status, which includes permissions
+        std::filesystem::file_status s = std::filesystem::status(target_directory);
+        // Iterate over each requested permission and verify it exists. If any not, then returns false..
+        for (SIMPLE_FS_PERMISSION perm: target_perms) {
+            bool cond1, cond2, cond3;
+            cond1 = (isOwner && ((s.permissions() & perms_map.at(perm).at("OWNER")) != std::filesystem::perms::none));
+            cond2 = (isInGroup && ((s.permissions() & perms_map.at(perm).at("GROUP")) != std::filesystem::perms::none));
+            cond3 = ((s.permissions() & perms_map.at(perm).at("OTHERS")) != std::filesystem::perms::none);
+            if ( ! (cond1 || cond2 || cond3) ) {
+                //This is like write all conditions as nested if's.
+                //If don't have any of requested permissions, return false.
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/** Check write permissions on specified directory. */
+bool canWriteOnDir(const char* directory){
+    return checkDirectoryPermissions(directory, {CAN_WRITE});
+}
+
+/**
+ * Returns true if yt-dlp exists on system path...
+ */
+bool isInstalledYTDLP() {
+    int yt_dlp_version_status = system ("yt-dlp --version");
+    if ( yt_dlp_version_status != 0 ) {
+        return false;
+    } else {
+        return true;
+    }
+}
+
+
+
+/**
+ *  Create a CURL handle, for an specific URL (not null) and an optional output_file;
+ */
+static CURL* get_curl_handle(const char* forURL, FILE* output_file) {
+    if(forURL == nullptr || forURL[0] == '\0'){
+        return nullptr;
+    }
+    CURL *curl;
+    curl_global_init(CURL_GLOBAL_ALL);
+    curl = curl_easy_init();
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, forURL);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);  //This allow redirections (i.e. HTTP 301 code)
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "libcurl-agent/1.0");
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, NULL);
+        if (output_file != nullptr)     curl_easy_setopt(curl, CURLOPT_WRITEDATA, output_file);
+    }
+    return curl;
+}
+
+//Function for download a file to a local output directory, and set a custom name. Returns 0 if all is ok.
+FLTUBE_STATUS_CODES download_file(std::string url, std::string output_dir, std::string outfilename, bool overwrite) {
+    CURL *curl;
+    FILE *fp;
+    CURLcode response;
+    FLTUBE_STATUS_CODES returnCode = FLT_OK;
+    std::string fullpath = output_dir + outfilename;
+    //If must not overwrite the file, check if exists before do any download...
+    if (!overwrite && std::filesystem::exists(fullpath)) {
+        return FLT_DOWNLOAD_FL_BYPASSED;
+    }
+
+    fp = fopen(fullpath.c_str(),"wb");
+    if (fp == nullptr) {
+       perror("Error creating download file");
+        //TODO: what else we can do if fp is nullptr?
+    }
+    curl = get_curl_handle(url.c_str(), fp);
+    if (curl) {
+        response = curl_easy_perform(curl);
+
+        if (response != CURLE_OK) {
+            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(response));
+            returnCode = FLT_DOWNLOAD_FL_FAILED;
+            std::filesystem::remove(fullpath.c_str());
+        }
+        curl_easy_cleanup(curl);
+        fclose(fp);
+    }
+    return returnCode;
+}
+
+/**
+ *  Check if there is network connectivity. Returns true if Internet is reachable.
+ */
+bool verify_network_connection() {
+    CURL *curl;
+    CURLcode response;
+    const char* url_test = "https://www.google.com";
+    // Use null device to redirect CURL output...
+    FILE* null_file = fopen("/dev/null", "w");
+    if (null_file == nullptr)  {
+        //TODO what else we can do if null_file is nullptr?
+        perror("Error opening file");
+    }
+    curl = get_curl_handle(url_test, null_file);
+    if (curl) {
+        response = curl_easy_perform(curl);
+        if ( response != CURLE_OK) {
+            printf(_("Connection testing failure: %s. Check your connectivity.\n"), url_test);
+            curl_easy_cleanup(curl);
+            return false;
+        }
+        curl_easy_cleanup(curl);
+        if (null_file != nullptr) fclose(null_file);
+        return true;
+    }
+    return false;
+}
+
+/** Returns a resized Fl_Image widget from an existing JPG image. If original image doesn't exists, a @nullptr is returned.*/
+Fl_Image* create_resized_image_from_jpg(std::string jpg_filepath, int target_width){
+    if(!std::filesystem::exists(jpg_filepath)) {
+        return nullptr;
+    }
+    Fl_Image* original_image = new Fl_JPEG_Image(jpg_filepath.c_str());
+
+    /*** Resize method --> https://es.elitescreens.eu/pages/screen-size-calculator ***/
+    // (h / w) * target_width
+    int new_height = ceil((original_image->h() / static_cast<double>(original_image->w())) * target_width);
+
+    Fl_Image* resized_image = original_image->copy(target_width, new_height);
+
+    //Free unused memory.
+    delete original_image;
+
+    return  resized_image;
+}
+
+/*
+ * Parse a parameter with the form "key=value". In example: "--aKey=aValue" will return "aValue".
+ * If parameter doesn't exists, or don't have a value, return an empty string ("").
+ */
+std::string getOptionValue(int argc, char* argv[], const std::string& option) {
+    std::string opt_value("");
+    for( int i = 0; i < argc; ++i) {
+        std::string arg = argv[i];
+        if(0 == arg.find(option)) {
+            std::size_t found = arg.find_first_of("=");
+            if (found != std::string::npos){
+                //Only is a value specified if "=" is present.
+                opt_value =arg.substr(found + 1);
+            }
+            return opt_value;
+        }
+    }
+    return opt_value;
+}
+
+/*
+ * Search for a parameter in the form "key" or "key=value" (In example: "--help", or "-h", or "--ip=W.X.Y.Z").
+ * If exists, return true.
+ */
+bool existsCmdOption(int argc, char* argv[], const std::string& option) {
+    for( int i = 0; i < argc; ++i) {
+        std::string arg = argv[i];
+        if(0 == arg.find(option)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * Erase all spaces at the begining or end of the parameter, modifing it.
+ */
+void trim(std::string &s){
+    // Left trim
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
+        return !std::isspace(ch);
+    }));
+
+    // Right trim
+    s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
+        return !std::isspace(ch);
+    }).base(), s.end());
+}
+
+/*
+ * Replace multiple spaces with a single space, besides erase all spaces at the begining or end of the parameter, modifing it.
+ */
+void trim_and_clean(std::string &s) {
+    // Use regular expression to replace multiple spaces with a single space
+    std::regex pattern("\\s+");
+    trim(s);
+    s = std::regex_replace(s, pattern, " ");
+}
+
+/** A quick way to split strings separated via any character delimiter.
+* A trim is made (delete initial or final spaces) over each token. */
+std::vector<std::string> tokenize(std::string s, const char delimiter) {
+    std::vector<std::string> tokens = {};
+    std::stringstream ss(s);
+    std::string word;
+    while (!ss.eof()) {
+        getline(ss, word, delimiter);
+        trim(word);
+        tokens.push_back(word);
+    }
+    return tokens;
+}
+
+// Replace from @original_text all ocurrences of @toReplace with @theReplace substring.
+void replace_all(std::string &original_text, const std::string &toReplace, const std::string &theReplace) {
+    //TODO make necessary check (empty string, etc)
+    size_t pos = 0;
+    bool keepsearching = true;
+    while (keepsearching) {
+        pos = original_text.find(toReplace, pos);
+        if (pos == std::string::npos) {
+            keepsearching = false;
+        } else {
+            original_text.erase(pos, toReplace.length());
+            original_text.insert(pos, theReplace);
+            pos += theReplace.length();
+        }
+    }
+}
+
+/**
+ * Returns true if parameter string represents a number.
+ */
+bool isNumber(const std::string& str) {
+    return !str.empty() && std::all_of(str.begin(), str.end(), ::isdigit);
+}
+
+// Returns the current version of this software expressed as an Integer (for example: 2.1.4 is expressed as 214).
+int getIntVersion(std::string version) {
+    replace_all(version, ".", "");
+    try {
+        return std::stoi(version);
+    } catch (const std::invalid_argument& e) {
+        char message[256];
+        snprintf(message, sizeof(message), "[ERROR] Invalid VERSION number format (%s). The version must be expressed as numbers separated by dots.\n", version.c_str());
+        printf("%s", message);
+        return -100000;
+    }
+}
+
+/*  Center on the main screen a window passed as parameter... */
+void center_window(Fl_Window* win) {
+    int screen_w = Fl::w();
+    int screen_h = Fl::h();
+    int center_x = (screen_w - win->w()) / 2;
+    int center_y = (screen_h - win->h()) / 2;
+    win->position(center_x, center_y);
+}
+
+
+void TerminalLogger::log(std::string log_message, LogLevel log_lvl) {
+    printf(PRINT_FORMAT.c_str(), "\033[1m[UNKNOWN]\033[0m ", currentDateTime().c_str(), log_message.c_str());
+
+}
+
+void TerminalLogger::info(std::string log_message) {
+    printf(PRINT_FORMAT.c_str(), "\033[32m\033[1m[INFO]\033[0m ", currentDateTime().c_str(), log_message.c_str());
+}
+
+void TerminalLogger::warn(std::string log_message) {
+    printf(PRINT_FORMAT.c_str(), "\033[34m\033[1m[WARN]\033[0m ", currentDateTime().c_str(), log_message.c_str());
+}
+
+void TerminalLogger::error(std::string log_message) {
+    fprintf(stderr, PRINT_FORMAT.c_str(), "\033[31m\033[1m[ERROR]\033[0m ", currentDateTime().c_str(), log_message.c_str());
+}
+
+void TerminalLogger::debug(std::string log_message) {
+    if (debug_enabled) {
+        printf(PRINT_FORMAT.c_str(), "\033[33m\033[1m[DEBUG]\033[0m ", currentDateTime().c_str(), log_message.c_str());
+    }
+}
+
+Pagination_Info PaginationManager::next() {
+    Pagination_Info next_page;
+    if (exists_next()) {
+        search_page_index++;
+        next_page = Pagination_Info(SEARCH_PAGE_SIZE, search_page_index);
+        // printf("SEARCH PAGE INDEX: %d, Upper Limit: %d, Count of results: %d \n", search_page_index, next_page.upper_end(), count_of_results);
+        // Increment count_of_results if reached a new max size of count results...
+        if (!limit_results_count &&  next_page.upper_end() > count_of_results) {
+            // printf("Increment count of results (%d) to a new number (%d) \n", count_of_results, count_of_results + SEARCH_PAGE_SIZE);
+            count_of_results += SEARCH_PAGE_SIZE;
+        }
+    } else {
+        next_page = Pagination_Info(SEARCH_PAGE_SIZE, search_page_index);
+    }
+    return next_page;
+}
+
+Pagination_Info PaginationManager::previous() {
+    if (exists_previous()) {
+        search_page_index--;
+    }
+    return Pagination_Info(SEARCH_PAGE_SIZE, search_page_index);
+}
+
+Pagination_Info PaginationManager::current() {
+    return Pagination_Info(SEARCH_PAGE_SIZE, search_page_index);
+}
+
+Pagination_Info PaginationManager::first() {
+    search_page_index = 0;
+    return Pagination_Info(SEARCH_PAGE_SIZE, search_page_index);
+}
+
+Pagination_Info PaginationManager::last() {
+    // Integer division always return the integer part of the result.
+    search_page_index = ((int)count_of_results - 1) / SEARCH_PAGE_SIZE;
+    // printf("COUNT OF RESULTS: %d, NEW search page index %d \n", count_of_results, search_page_index);
+    return Pagination_Info(SEARCH_PAGE_SIZE, search_page_index);
+}
+
+void PaginationManager::reset() {
+    search_page_index = 0;
+    count_of_results = SEARCH_PAGE_SIZE;
+    limit_results_count = false;
+}
+
+std::string PaginationManager::print_pagination_info() {
+    unsigned int total_pages;
+    if (count_of_results == 0) {
+        total_pages = 1;
+    } else {
+        total_pages = (((int)count_of_results - 1) / SEARCH_PAGE_SIZE) + 1;
+    }
+    std::string status = std::to_string(this->search_page_index + 1) + "/" + std::to_string(total_pages);
+    return status;
+}
+
+bool PaginationManager::exists_next() {
+    // Always exists a next page to lookup if results count is not restricted.
+    if (!limit_results_count) return true;
+    else {
+        //Otherwise, check if lower limit of a next page is less or equal than count of results.
+        Pagination_Info pi = Pagination_Info(SEARCH_PAGE_SIZE, search_page_index + 1);
+        return pi.lower_end() <= count_of_results;
+    }
+}
+
+bool PaginationManager::exists_previous() {
+    return search_page_index > 0;
+}
+
+bool PaginationManager::is_last_page_known() {
+    int last_page_index = ((int)count_of_results - 1) / SEARCH_PAGE_SIZE;
+    return search_page_index == last_page_index;
+}

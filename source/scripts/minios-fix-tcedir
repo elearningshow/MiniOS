@@ -1,0 +1,47 @@
+#!/bin/sh
+# BAKE-AP-01 v1.8: /etc/sysconfig/tcedir must be a symlink, not a directory.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+REAL=""
+for d in /mnt/*/cde /mnt/*/tce /cde /tce; do
+  if [ -f "$d/optional/mplayer-cli.tcz" ]; then
+    REAL="$d"
+    break
+  fi
+done
+[ -n "$REAL" ] || exit 0
+mkdir -p /etc/sysconfig
+if [ -L /etc/sysconfig/tcedir ]; then
+  ln -sfn "$REAL" /etc/sysconfig/tcedir
+elif [ -d /etc/sysconfig/tcedir ]; then
+  mv /etc/sysconfig/tcedir /etc/sysconfig/tcedir.bak-dir
+  ln -sfn "$REAL" /etc/sysconfig/tcedir
+elif [ -e /etc/sysconfig/tcedir ]; then
+  mv /etc/sysconfig/tcedir /etc/sysconfig/tcedir.bak-file
+  ln -sfn "$REAL" /etc/sysconfig/tcedir
+else
+  ln -sfn "$REAL" /etc/sysconfig/tcedir
+fi
+
+# Real mplayer from the onboot tcz. Never leave the click-time tce-load wrapper.
+if [ -x /tmp/tcloop/mplayer-cli/usr/local/bin/mplayer ]; then
+  if [ -f /usr/local/bin/mplayer ] && grep -q minios-load-tcz /usr/local/bin/mplayer 2>/dev/null; then
+    rm -f /usr/local/bin/mplayer
+  fi
+  if [ ! -e /usr/local/bin/mplayer ]; then
+    ln -sfn /tmp/tcloop/mplayer-cli/usr/local/bin/mplayer /usr/local/bin/mplayer
+  fi
+fi
+
+# python3.9 binaries live in files.tar.gz until tce.installed extracts them.
+if [ ! -x /usr/local/bin/python3.9 ]; then
+  tgz=""
+  if [ -f /usr/local/share/python3.9/files/files.tar.gz ]; then
+    tgz=/usr/local/share/python3.9/files/files.tar.gz
+  elif [ -f /tmp/tcloop/python3.9/usr/local/share/python3.9/files/files.tar.gz ]; then
+    tgz=/tmp/tcloop/python3.9/usr/local/share/python3.9/files/files.tar.gz
+  fi
+  if [ -n "$tgz" ]; then
+    tar xzf "$tgz" -C / 2>/dev/null || true
+  fi
+fi
+exit 0

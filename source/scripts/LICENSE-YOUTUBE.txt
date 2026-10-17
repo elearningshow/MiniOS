@@ -1,0 +1,7 @@
+MiniOS YouTube
+search based on FLTube
+
+FLTube is the original search interface by Facundo Almeida.
+MiniOS uses that search as the YouTube front end on this image.
+The MiniOS player and TikTok search are separate programs.
+TikTok results are not stored on YouTube lists.

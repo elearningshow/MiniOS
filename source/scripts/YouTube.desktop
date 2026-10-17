@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=YouTube
+Comment=Search YouTube and play. Search based on FLTube.
+Exec=/usr/local/bin/minios-run youtube -- /usr/local/bin/minios-youtube
+Icon=youtube
+X-FullPathIcon=/opt/minios/youtube.png
+Terminal=false
+Categories=AudioVideo;Network;
+StartupNotify=false

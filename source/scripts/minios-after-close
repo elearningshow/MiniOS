@@ -1,0 +1,42 @@
+#!/bin/sh
+# minios-after-close — called when an app that was not held by minios-run wait exits (player)
+# started from YouTube). Show Refresh RAM and free that app only.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+NAME="${1:-player}"
+LOG=/tmp/minios-reclaim.log
+echo "after-close $NAME $(date -u)" >>"$LOG"
+
+# Player memory is freed when YouTube or TikTok search closes, not here.
+for d in /tmp/minios-run-${NAME}.lock /tmp/minios-run-player.lock \
+         /tmp/minios-run-minios-player.lock /tmp/minios-run-youtube.lock \
+         /tmp/minios-run-minios-youtube.lock /tmp/minios-run-tiktok.lock \
+         /tmp/minios-run-minios-tiktok.lock; do
+  if [ -d "$d" ]; then
+    echo "after-close skip, lock $d" >>"$LOG"
+    exit 0
+  fi
+done
+if [ -f /tmp/minios-reclaiming ] || [ -f /tmp/minios-refreshing ]; then
+  exit 0
+fi
+if [ "$NAME" = player ] || [ "$NAME" = minios-player ]; then
+  echo "after-close player, wait for search GUI close" >>"$LOG"
+  exit 0
+fi
+
+: >/tmp/minios-reclaiming
+if [ -x /opt/minios/minios-cad ]; then
+  /opt/minios/minios-cad --notice "Please wait." "Freeing memory." >/dev/null 2>&1 &
+fi
+sleep 0.8
+if [ -x /opt/minios/minios-appkit ]; then
+  /opt/minios/minios-appkit unload "$NAME" >>/tmp/minios-appkit.log 2>&1 || true
+fi
+if [ -x /opt/minios/minios-reclaim ]; then
+  sudo -n /opt/minios/minios-reclaim auto "$NAME" >>"$LOG" 2>&1 || \
+    /opt/minios/minios-reclaim auto "$NAME" >>"$LOG" 2>&1 || true
+fi
+: >/tmp/minios-notice.done
+rm -f /tmp/minios-reclaiming /tmp/minios-notice.pid
+exit 0

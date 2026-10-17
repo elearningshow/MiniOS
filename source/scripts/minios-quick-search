@@ -1,0 +1,3 @@
+#!/bin/sh
+# Quick Search was a second copy of Text Browser. Keep one program.
+exec /usr/local/bin/minios-text-browser "$@"

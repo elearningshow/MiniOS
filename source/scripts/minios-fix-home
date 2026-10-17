@@ -1,0 +1,18 @@
+#!/bin/sh
+# Make /home/tc writable by user tc. Run as root from bootlocal.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+USER=$(cat /etc/sysconfig/tcuser 2>/dev/null || echo tc)
+HOME_DIR="/home/$USER"
+mkdir -p "$HOME_DIR" "$HOME_DIR/.local" "$HOME_DIR/.config" "$HOME_DIR/.X.d"
+# Tiny Core: tc is typically uid 1001, group staff (50)
+chown -R "$USER":staff "$HOME_DIR" 2>/dev/null || chown -R 1001:50 "$HOME_DIR"
+chmod 755 "$HOME_DIR"
+chmod 755 "$HOME_DIR/.local" "$HOME_DIR/.config" 2>/dev/null || true
+# Persistence list
+if [ -f /opt/.filetool.lst ]; then
+  grep -qx home /opt/.filetool.lst || echo home >> /opt/.filetool.lst
+fi
+echo 1 > /etc/sysconfig/backup 2>/dev/null || true
+echo "fix-home done $(date) user=$USER" > /tmp/minios-fix-home.log
+ls -ld "$HOME_DIR" >> /tmp/minios-fix-home.log 2>&1
+exit 0

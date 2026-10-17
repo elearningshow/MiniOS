@@ -1,0 +1,552 @@
+#!/bin/sh
+# SWAP-AP-02 v1.1 Option C: enlarge zram (speed) AND force a 512 MB
+# disk swap file on the internal drive (capacity).
+# NEVER format, NEVER repartition, NEVER install MiniOS, NEVER swapon at boot.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export HOME="${HOME:-/home/tc}"
+export DISPLAY="${DISPLAY:-:0}"
+
+LOG=/tmp/minios-swap.log
+REPORT_NAME=SWAP-AP-02-REPORT.txt
+SWAPNAME=minios-swapfile
+CONF=/opt/minios/swap.conf
+MODE="both"
+SIZE_ARG="512M"
+YES=0
+PERSIST=ask
+ALLOW_USB=0
+STATUS_ONLY=0
+ZRAM_TARGET_MB=256
+
+need_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    exec sudo -E "$0" "$@"
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+MiniOS SWAP-AP-02 — Enlarge zram + 512 MB internal disk swap (after the desktop is up)
+
+  minios-create-swap              Option C: enlarge zram AND create the disk file
+  minios-create-swap --both       same as default
+  minios-create-swap --status     show RAM and swap only
+  minios-create-swap --zram       enlarge / enable zram only
+  minios-create-swap --disk       disk file only (still created even if zram exists)
+  minios-create-swap --size=512M  disk file size (256M, 512M, 1G)
+  minios-create-swap --yes        no prompts (still will not format)
+  minios-create-swap --persist    write post-GUI re-enable config (not bootlocal)
+  minios-create-swap --usb        last-resort: allow the live USB (type USB)
+
+Never runs at boot. Never formats a disk. Never installs MiniOS.
+Does not put swapon in bootlocal.sh (that delayed / broke the desktop).
+EOF
+}
+
+parse_size_mb() {
+  raw=$(echo "$1" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
+  case "$raw" in
+    *G) echo $(( ${raw%G} * 1024 )) ;;
+    *M) echo "${raw%M}" ;;
+    *K) echo $(( ${raw%K} / 1024 )) ;;
+    *)  echo "$raw" ;;
+  esac
+}
+
+log() { echo "$*"; }
+
+mem_mb() {
+  awk '/^MemTotal:/ { printf "%d", $2/1024; exit }' /proc/meminfo 2>/dev/null || echo 0
+}
+
+swap_mb() {
+  awk '/^SwapTotal:/ { printf "%d", $2/1024; exit }' /proc/meminfo 2>/dev/null || echo 0
+}
+
+zram_active_mb() {
+  awk 'NR>1 && $1 ~ /zram/ { s+=$3 } END { printf "%d", s/1024 }' /proc/swaps 2>/dev/null
+}
+
+disk_swap_mb() {
+  awk 'NR>1 && $1 !~ /zram/ { s+=$3 } END { printf "%d", s/1024 }' /proc/swaps 2>/dev/null
+}
+
+show_mem() {
+  echo "----- memory / swap (photograph this) -----"
+  if command -v free >/dev/null 2>&1; then
+    free -m 2>/dev/null || free
+  else
+    awk '/MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree/ { print }' /proc/meminfo
+  fi
+  echo "----- /proc/swaps -----"
+  cat /proc/swaps 2>/dev/null || true
+}
+
+confirm() {
+  msg="$1"
+  if [ "$YES" = 1 ]; then
+    return 0
+  fi
+  if command -v xmessage >/dev/null 2>&1 && [ -n "${DISPLAY:-}" ]; then
+    xmessage -center -buttons "Yes:0,Cancel:1" "$msg" 2>/dev/null && return 0
+    return 1
+  fi
+  echo
+  echo "$msg"
+  printf "Press Enter to continue, or Ctrl-C to cancel: "
+  read _ans || return 1
+  return 0
+}
+
+ask_yn() {
+  prompt="$1"
+  def="$2"
+  if [ "$YES" = 1 ]; then
+    [ "$def" = y ] && return 0
+    return 1
+  fi
+  printf "%s " "$prompt"
+  read ans || ans=""
+  ans=$(echo "$ans" | tr '[:upper:]' '[:lower:]')
+  case "$ans" in
+    y|yes) return 0 ;;
+    n|no)  return 1 ;;
+    *) [ "$def" = y ] && return 0; return 1 ;;
+  esac
+}
+
+usb_root() {
+  for d in /mnt/*; do
+    [ -d "$d/cde/optional" ] && echo "$d" && return 0
+  done
+  return 1
+}
+
+boot_disk_name() {
+  root=$(usb_root) || return 1
+  base=$(basename "$root")
+  echo "$base" | sed 's/[0-9]*$//;s/p$//'
+}
+
+is_usb_block() {
+  name="$1"
+  sys="/sys/block/$name"
+  [ -d "$sys" ] || return 1
+  rem=$(cat "$sys/removable" 2>/dev/null || echo 1)
+  [ "$rem" = 1 ] && return 0
+  readlink -f "$sys" 2>/dev/null | grep -qi usb && return 0
+  return 1
+}
+
+load_disk_modules() {
+  for m in ata_generic ata_piix pata_amd pata_atiixp pata_via pata_sis \
+           pata_jmicron pata_serverworks ahci libata sd_mod sr_mod ntfs3; do
+    modprobe "$m" 2>/dev/null || true
+  done
+  for h in /sys/class/scsi_host/host*/scan; do
+    [ -w "$h" ] || continue
+    echo "- - -" >"$h" 2>/dev/null || true
+  done
+}
+
+find_internal_disk() {
+  boot=$(boot_disk_name 2>/dev/null || true)
+  best=""
+  bestsz=0
+  for d in /sys/block/sd* /sys/block/hd*; do
+    [ -d "$d" ] || continue
+    name=$(basename "$d")
+    [ "$name" = "$boot" ] && continue
+    is_usb_block "$name" && continue
+    size=$(cat "$d/size" 2>/dev/null || echo 0)
+    [ "$size" -gt "$bestsz" ] || continue
+    best="$name"
+    bestsz="$size"
+  done
+  if [ -n "$best" ]; then
+    echo "/dev/$best"
+    return 0
+  fi
+  return 1
+}
+
+try_mount_existing() {
+  disk="$1"
+  mnt="$2"
+  mkdir -p "$mnt"
+  if mountpoint -q "$mnt" 2>/dev/null; then
+    return 0
+  fi
+  for p in ${disk}1 ${disk}2 ${disk}3 ${disk}p1 ${disk}p2; do
+    [ -b "$p" ] || continue
+    for t in ntfs3 vfat ext4 ext3 ext2; do
+      if mount -t "$t" "$p" "$mnt" 2>/dev/null; then
+        echo "$p"
+        return 0
+      fi
+    done
+    if mount "$p" "$mnt" 2>/dev/null; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+free_mb_on() {
+  df -m "$1" 2>/dev/null | awk 'NR==2 { print $4; exit }'
+}
+
+zram_possible() {
+  modprobe zram 2>/dev/null || true
+  [ -d /sys/class/zram-control ] && return 0
+  [ -d /sys/block/zram0 ] && return 0
+  [ -b /dev/zram0 ] && return 0
+  return 1
+}
+
+set_zram_disksize() {
+  mb="$1"
+  bytes=$(( mb * 1024 * 1024 ))
+  if [ -w /sys/block/zram0/disksize ]; then
+    echo "${mb}M" > /sys/block/zram0/disksize 2>/dev/null && return 0
+    echo "$bytes" > /sys/block/zram0/disksize 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+# SWAP-TUNE-AP-01: keep the existing zram size (~64–96 MB). Do not grow.
+# Enable it at priority 100 if it is present and not already on.
+enlarge_zram() {
+  log "----- Phase 2: keep existing zram (do not grow) -----"
+  if ! zram_possible; then
+    log "zram device / module is not present on this Tiny Core 16.2 32-bit kernel."
+    log "Keeping any existing swap. Disk file (Phase 3) still runs."
+    return 1
+  fi
+  if [ -e /sys/class/zram-control/hot_add ] && [ ! -d /sys/block/zram0 ]; then
+    cat /sys/class/zram-control/hot_add >/dev/null 2>&1 || true
+  fi
+  cur=$(zram_active_mb)
+  [ -n "$cur" ] || cur=0
+  log "zram now: ${cur}M (SWAP-TUNE: keep, do not double)"
+  if [ "$cur" -gt 0 ]; then
+    log "zram already active. Size left unchanged."
+    return 0
+  fi
+  if [ ! -b /dev/zram0 ] && [ ! -d /sys/block/zram0 ]; then
+    log "FAIL: no /dev/zram0"
+    return 1
+  fi
+  # Device exists but is not in /proc/swaps — turn it on at current disksize.
+  mkswap /dev/zram0 2>/dev/null || true
+  if swapon -p 100 /dev/zram0 2>/dev/null || swapon /dev/zram0; then
+    log "zram enabled at existing size: $(zram_active_mb)M pri=100"
+    return 0
+  fi
+  log "FAIL: swapon /dev/zram0"
+  return 1
+}
+
+pick_swapfile() {
+  dir="$1"
+  if [ -f "$dir/swapfile" ] && [ ! -f "$dir/$SWAPNAME" ]; then
+    echo "$dir/swapfile"
+  else
+    echo "$dir/$SWAPNAME"
+  fi
+}
+
+enable_file() {
+  mb="$1"
+  on_usb="$2"
+  log "----- Phase 3: ${mb}M disk swap file on the internal drive (capacity) -----"
+  load_disk_modules
+  sleep 1
+
+  if [ "$on_usb" = 1 ]; then
+    root=$(usb_root) || { log "FAIL: live USB not mounted"; return 1; }
+    SWAPFILE=$(pick_swapfile "$root")
+    log "USB last-resort path: $SWAPFILE"
+  else
+    disk=$(find_internal_disk) || {
+      log "FAIL: no internal hard drive seen (non-USB)."
+      log "Run: sudo minios-internal"
+      log "This script will not write to the live USB unless you pass --usb and type USB."
+      return 1
+    }
+    log "Internal disk: $disk"
+    part=$(try_mount_existing "$disk" /mnt/internal) || {
+      log "FAIL: could not mount any existing filesystem on $disk"
+      log "Refusing to format or create a partition. If the drive has no filesystem,"
+      log "create one yourself ONLY if you intend to — this script will not do it."
+      fdisk -l "$disk" 2>/dev/null || true
+      return 1
+    }
+    log "Mounted existing partition $part on /mnt/internal"
+    SWAPFILE=$(pick_swapfile /mnt/internal)
+  fi
+
+  avail=$(free_mb_on "$(dirname "$SWAPFILE")")
+  need=$(( mb + 64 ))
+  log "Free space: ${avail:-?}M  needed: ${need}M (includes 64M margin)"
+  if [ -n "$avail" ] && [ "$avail" -lt "$need" ]; then
+    log "FAIL: not enough free space (will not fill the partition)."
+    return 1
+  fi
+
+  if [ -f "$SWAPFILE" ]; then
+    log "Swap file already exists: $SWAPFILE"
+    if grep -q "$SWAPFILE" /proc/swaps 2>/dev/null; then
+      log "Already active."
+    else
+      chmod 600 "$SWAPFILE"
+      swapon -p 1 "$SWAPFILE" || swapon "$SWAPFILE" || { log "FAIL: swapon existing file"; return 1; }
+    fi
+  else
+    log "Creating ${mb}M swap file (slow IDE can take 1-3 minutes)..."
+    log "The system may feel unresponsive. Please wait."
+    if command -v fallocate >/dev/null 2>&1 && fallocate -l "${mb}M" "$SWAPFILE" 2>/dev/null; then
+      log "fallocate ok"
+    else
+      dd if=/dev/zero of="$SWAPFILE" bs=1M count="$mb" 2>/tmp/minios-swap-dd.err || {
+        log "FAIL: dd could not write $SWAPFILE"
+        cat /tmp/minios-swap-dd.err 2>/dev/null || true
+        rm -f "$SWAPFILE"
+        return 1
+      }
+      log "dd finished"
+    fi
+    chmod 600 "$SWAPFILE"
+    mkswap "$SWAPFILE" || { log "FAIL: mkswap"; return 1; }
+    swapon -p 1 "$SWAPFILE" || swapon "$SWAPFILE" || { log "FAIL: swapon"; return 1; }
+  fi
+
+  echo "$SWAPFILE" > /tmp/minios-swap.path
+  log "swap file active: $SWAPFILE"
+  return 0
+}
+
+write_conf() {
+  zram_ok="$1"
+  file_path="$2"
+  file_mb="$3"
+  mkdir -p /opt/minios
+  {
+    echo "TYPE=both"
+    echo "ZRAM=$zram_ok"
+    echo "ZRAM_SIZE=$(zram_active_mb)M"
+    echo "FILE=1"
+    echo "PATH=$file_path"
+    echo "SIZE=${file_mb}M"
+    echo "FILE_SIZE=${file_mb}M"
+    echo "DEVICE=/dev/zram0"
+  } >"$CONF"
+}
+
+write_persist() {
+  mkdir -p /opt/minios
+  if [ -f /opt/.filetool.lst ]; then
+    grep -qx home /opt/.filetool.lst || echo home >> /opt/.filetool.lst
+    grep -qx opt /opt/.filetool.lst || echo opt >> /opt/.filetool.lst
+  fi
+  echo "PERSIST=1" >>"$CONF"
+  log "Persistence: existing swap is re-enabled AFTER the desktop starts."
+  log "Nothing is created at boot. bootlocal.sh is not given swapon."
+  log "The disk file lives on the internal drive, so it is not added to filetool.lst."
+  if command -v filetool.sh >/dev/null 2>&1; then
+    filetool.sh -b >/tmp/minios-swap-filetool.log 2>&1 && log "filetool backup ok" \
+      || log "NOTE: filetool backup skipped or failed (see /tmp/minios-swap-filetool.log)"
+  fi
+}
+
+copy_report() {
+  root=$(usb_root 2>/dev/null || true)
+  if [ -n "$root" ] && [ -w "$root" ]; then
+    cp -f "$LOG" "$root/$REPORT_NAME" 2>/dev/null || true
+    log "Copied report to $root/$REPORT_NAME"
+  fi
+}
+
+already_option_c() {
+  d=$(disk_swap_mb); [ -n "$d" ] || d=0
+  [ "$d" -ge 500 ]
+}
+
+# ---------- args ----------
+for arg in "$@"; do
+  case "$arg" in
+    --help|-h) usage; exit 0 ;;
+    --both|--option-c) MODE=both ;;
+    --zram) MODE=zram ;;
+    --disk) MODE=disk ;;
+    --usb) ALLOW_USB=1; MODE=usb ;;
+    --yes|-y) YES=1 ;;
+    --persist) PERSIST=yes ;;
+    --no-persist) PERSIST=no ;;
+    --hide-icon) ;;
+    --status) STATUS_ONLY=1 ;;
+    --size=*) SIZE_ARG="${arg#--size=}" ;;
+    --size) ;;
+    *)
+      if echo "$arg" | grep -qE '^[0-9]+[MmGgKk]?$'; then
+        SIZE_ARG="$arg"
+      fi
+      ;;
+  esac
+done
+
+need_root "$@"
+
+{
+  echo "===================================================="
+  echo "  Action plan: SWAP-AP-02 + SWAP-TUNE-AP-01"
+  echo "  Keep zram size; 512 MB disk file; zram priority higher than disk"
+  echo "  $(date 2>/dev/null)"
+  echo "===================================================="
+  echo "Policy: live USB. Never format. Never install MiniOS."
+  echo "Swap is not created at boot and not while the desktop starts."
+  echo "A small existing zram does NOT skip the disk file."
+  echo
+
+  show_mem
+  echo
+  echo "RAM visible: $(mem_mb)M   swap now: $(swap_mb)M"
+  echo "  zram: $(zram_active_mb)M    disk swap: $(disk_swap_mb)M"
+
+  if [ "$STATUS_ONLY" = 1 ]; then
+    echo "Status only. No changes."
+    echo "===================================================="
+    exit 0
+  fi
+
+  # Like Wi-Fi: icon stays. If the swap file is already there, say so and stop.
+  dnow=$(disk_swap_mb); [ -n "$dnow" ] || dnow=0
+  if [ "$dnow" -ge 400 ] && [ "$MODE" = both ]; then
+    echo
+    echo "Swap file already created successfully."
+    echo "Nothing more to create. The Create Swap icon stays so you can"
+    echo "check this anytime (same idea as Network when Wi-Fi is up)."
+    echo
+    echo "  disk swap: ${dnow}M"
+    echo "  zram:      $(zram_active_mb)M"
+    echo "  total:     $(swap_mb)M"
+    echo
+    show_mem
+    echo "===================================================="
+    exit 0
+  fi
+
+  if already_option_c && [ "$MODE" = both ]; then
+    echo
+    echo "Swap file already created successfully."
+    echo "Not creating another file. Not shrinking zram."
+    show_mem
+    echo "===================================================="
+    exit 0
+  fi
+
+  SIZE_MB=$(parse_size_mb "$SIZE_ARG")
+  [ -n "$SIZE_MB" ] || SIZE_MB=512
+  # SWT-04: default 512. Ceiling 1024. This bake does not create 1024.
+  [ "$SIZE_MB" -gt 1024 ] && SIZE_MB=1024
+  RAM=$(mem_mb)
+  ZRAM_TARGET_MB=$(zram_active_mb)
+  [ -n "$ZRAM_TARGET_MB" ] || ZRAM_TARGET_MB=0
+
+  zram_ok=0
+  file_ok=0
+  SWAPFILE=""
+
+  if [ "$MODE" = disk ]; then
+    confirm "Create a ${SIZE_MB}M swap file on the INTERNAL hard drive (never format). Slow IDE can take 1-3 minutes." \
+      || exit 1
+    enable_file "$SIZE_MB" 0 && file_ok=1
+    SWAPFILE=$(cat /tmp/minios-swap.path 2>/dev/null || true)
+  elif [ "$MODE" = usb ]; then
+    echo "USB is last-resort (slow + write wear)."
+    if [ "$YES" != 1 ]; then
+      printf "Type USB in capitals to write a swap file on the live USB: "
+      read typed || typed=""
+      [ "$typed" = "USB" ] || { echo "Cancelled."; exit 1; }
+    fi
+    enable_file "$SIZE_MB" 1 && file_ok=1
+    SWAPFILE=$(cat /tmp/minios-swap.path 2>/dev/null || true)
+  elif [ "$MODE" = zram ]; then
+    confirm "Enable existing zram (keep current size, do not grow)." || exit 1
+    enlarge_zram && zram_ok=1
+  else
+    confirm "Create a ${SIZE_MB}M disk swap file on the INTERNAL hard drive and keep existing zram (do not grow zram). Slow IDE can take 1-3 minutes. Never format." \
+      || exit 1
+    enlarge_zram && zram_ok=1
+    enable_file "$SIZE_MB" 0 && file_ok=1
+    SWAPFILE=$(cat /tmp/minios-swap.path 2>/dev/null || true)
+  fi
+
+  write_conf "$zram_ok" "$SWAPFILE" "$SIZE_MB"
+
+  echo
+  echo "----- after Phase 3 (photograph free -m) -----"
+  show_mem
+  echo
+  echo "RAM visible: $(mem_mb)M   swap now: $(swap_mb)M"
+  echo "  zram: $(zram_active_mb)M    disk swap: $(disk_swap_mb)M"
+
+  ok=0
+  if [ "$MODE" = zram ]; then
+    [ "$zram_ok" = 1 ] && ok=1
+  elif [ "$MODE" = disk ] || [ "$MODE" = usb ]; then
+    [ "$file_ok" = 1 ] && ok=1
+  else
+    [ "$file_ok" = 1 ] && ok=1
+  fi
+
+  if [ "$ok" != 1 ]; then
+    echo "SWAP=NOT_CREATED"
+    echo "===================================================="
+    exit 1
+  fi
+
+  if [ "$MODE" = both ] && [ "$zram_ok" != 1 ]; then
+    echo "ZRAM=SKIPPED (no module / enlarge failed). Disk file is the capacity path."
+  fi
+  echo "SWAP=ACTIVE"
+  echo "Target: disk 512M (ceiling 1024M later). zram kept at existing size, priority 100."
+  if [ -x /opt/minios/minios-swap-tune ]; then
+    /opt/minios/minios-swap-tune || true
+  elif [ -x /usr/local/bin/minios-swap-tune ]; then
+    /usr/local/bin/minios-swap-tune || true
+  fi
+  echo "----- /proc/swaps (zram should be pri 100, disk pri 1) -----"
+  cat /proc/swaps 2>/dev/null || true
+  echo
+
+  do_persist=0
+  if [ "$PERSIST" = yes ]; then
+    do_persist=1
+  elif [ "$PERSIST" = no ]; then
+    do_persist=0
+  elif [ "$YES" = 1 ]; then
+    do_persist=1
+  else
+    if ask_yn "Re-enable this swap after the desktop starts on the next boot? [Y/n]" y; then
+      do_persist=1
+    fi
+  fi
+  [ "$do_persist" = 1 ] && write_persist
+
+  echo
+  echo "Photograph this window (Phase 3 free -m). After a reboot, run:"
+  echo "  sudo minios-create-swap --status"
+  echo "and photograph that too. Swap comes back after the desktop, not at boot."
+  echo "===================================================="
+} 2>&1 | tee "$LOG"
+
+copy_report
+echo
+echo "Log: $LOG"
+if [ "$YES" != 1 ]; then
+  echo -n "Press Enter to close... "
+  read _done || true
+fi
+exit 0

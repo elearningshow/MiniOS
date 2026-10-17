@@ -1,0 +1,101 @@
+#!/bin/sh
+# v0.2.106 player-bar always execs this name.
+# YouTube: minios-yt-dlp -g runs minios-yt-resolve, which downloads
+# video, then audio, then captions, and prints the local file.
+# This script then starts MiniOS mplayer. Do not write reload.
+# TikTok goes to minios-tiktok-play. Never share a downloader.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+LOG=/tmp/minios-shorts-play.log
+URL="$1"
+echo $$ >/tmp/minios-dl.pid
+GEN=$(cat /tmp/minios-play-gen 2>/dev/null || echo 0)
+export MINIOS_PLAY_GEN="$GEN"
+export MINIOS_QUEUE_PLAY=1
+{
+  echo "===== shorts-play $(date -u) ====="
+  echo "url=$URL gen=$GEN pid=$$"
+} >>"$LOG"
+[ -n "$URL" ] || exit 1
+rm -f /tmp/minios-mp.fail
+case "$URL" in
+  *tiktok.com*)
+    if [ -x /opt/minios/minios-tiktok-play ]; then
+      exec /opt/minios/minios-tiktok-play "$URL"
+    fi
+    exec /usr/local/bin/minios-tiktok-play "$URL"
+    ;;
+esac
+printf 'youtube\n' >/tmp/minios-player-mode
+if [ -f /tmp/minios-mp.quit ]; then
+  if pgrep -x minios-player-bar >/dev/null 2>&1; then
+    echo "user quit, not starting" >>"$LOG"
+    exit 0
+  fi
+  rm -f /tmp/minios-mp.quit
+fi
+YTDLP=/opt/minios/minios-yt-dlp
+[ -x "$YTDLP" ] || YTDLP=/usr/local/bin/minios-yt-dlp
+MP=/opt/minios/minios-mplayer
+[ -x "$MP" ] || MP=/usr/local/bin/minios-mplayer
+if [ ! -x "$YTDLP" ] || [ ! -x "$MP" ]; then
+  echo "missing play tools" >>"$LOG"
+  printf '0\nThe video file was not downloaded.\n' >/tmp/minios-dl.progress
+  exit 127
+fi
+printf '0\nDownloading video\n' >/tmp/minios-dl.progress
+got=$("$YTDLP" -g "$URL") || {
+  echo "resolve fail" >>"$LOG"
+  echo fail >/tmp/minios-mp.fail
+  printf '0\nThe video file was not downloaded.\n' >/tmp/minios-dl.progress
+  exit 1
+}
+got=$(printf '%s\n' "$got" | awk 'NF { p=$0 } END { print p }')
+echo "got=$got" >>"$LOG"
+[ -n "$got" ] || {
+  echo "empty resolve" >>"$LOG"
+  printf '0\nThe video file was not downloaded.\n' >/tmp/minios-dl.progress
+  exit 1
+}
+if [ -f /tmp/minios-mp.quit ]; then
+  echo "user quit before play" >>"$LOG"
+  exit 0
+fi
+case "$got" in
+  /tmp/*|/*.mp4|/*.m4a|/*.mkv|/*.webm)
+    if [ ! -s "$got" ]; then
+      echo "downloaded file missing $got" >>"$LOG"
+      printf '0\nThe video file was not downloaded.\n' >/tmp/minios-dl.progress
+      exit 1
+    fi
+    ;;
+esac
+printf '100\nPlaying media file\n' >/tmp/minios-dl.progress
+# The bar bumps the play generation when this click reloads. The number
+# captured at the start of the download is then stale, and mplayer exits
+# before the picture starts. If this URL is still the selected row, use
+# the generation that is current now.
+PL=/tmp/minios-yt-playlist
+idx=$(head -n 1 "$PL" 2>/dev/null | tr -cd '0-9')
+[ -n "$idx" ] || idx=0
+sel=$(awk -F '\t' -v n="$((idx + 2))" 'NR == n { print $1; exit }' "$PL" 2>/dev/null || true)
+if [ -n "$sel" ] && [ "$sel" != "$URL" ]; then
+  echo "superseded selected=$sel" >>"$LOG"
+  exit 0
+fi
+export MINIOS_PLAY_GEN=$(cat /tmp/minios-play-gen 2>/dev/null || echo 0)
+# The previous picture is still holding the sound device. Stop it before
+# this file starts. Queue mode in mplayer would leave that process running.
+if pgrep -x mplayer >/dev/null 2>&1; then
+  echo "stop previous mplayer" >>"$LOG"
+  if [ -p /tmp/minios-mp.cmd ]; then
+    ( echo quit >/tmp/minios-mp.cmd ) >>"$LOG" 2>&1 &
+    qpid=$!
+    sleep 0.3
+    kill "$qpid" 2>/dev/null || true
+  fi
+  pkill -x mplayer >/dev/null 2>&1 || true
+  sleep 0.2
+fi
+echo "player-v21 starting mplayer $got gen=$MINIOS_PLAY_GEN" >>"$LOG"
+exec "$MP" "$got"

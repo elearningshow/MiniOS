@@ -1,0 +1,41 @@
+#!/bin/sh
+# Quote Tiny Core setupHome so names with spaces (Refresh RAM) are not split.
+# Unquoted `find` produced:
+#   tar: .wmx/Refresh: No such file or directory
+#   tar: RAM: No such file or directory
+#   tar: Desktop/Refresh: No such file or directory
+#   tar: RAM.desktop: No such file or directory
+#   chown: /home/tc/RAM: No such file or directory
+F=/etc/init.d/tc-functions
+[ -f "$F" ] || exit 0
+grep -q 'minios-setuphome-quote' "$F" && exit 0
+python3 - "$F" <<'PY' || true
+import sys
+path = sys.argv[1]
+text = open(path, encoding="utf-8", errors="replace").read()
+old = """   LIST=`mktemp`
+   > "$LIST"
+   for S in `find /etc/skel -type f`
+   do
+ITEM="${S#/etc/skel/}"
+if [ ! -e /home/"$USER"/"$ITEM" ] 
+then
+echo "$ITEM" >> "$LIST"
+fi
+   done"""
+new = """   LIST=`mktemp`
+   > "$LIST"
+   # minios-setuphome-quote: read find output line by line (spaces in names).
+   find /etc/skel -type f | while IFS= read -r S
+   do
+ITEM="${S#/etc/skel/}"
+if [ ! -e /home/"$USER"/"$ITEM" ]
+then
+printf '%s\\n' "$ITEM" >> "$LIST"
+fi
+   done"""
+if old not in text:
+    sys.exit(1)
+open(path, "w", encoding="utf-8").write(text.replace(old, new, 1))
+PY
+exit 0

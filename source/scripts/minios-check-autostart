@@ -1,0 +1,33 @@
+#!/bin/sh
+# Delayed auto-run of minios-check after desktop is up (photo-ready popup)
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+export HOME="${HOME:-/home/tc}"
+
+# Only once per boot
+[ -f /tmp/minios-check.autostarted ] && exit 0
+touch /tmp/minios-check.autostarted
+
+(
+  # Wait for X + wallpaper paint + extensions
+  i=0
+  while [ "$i" -lt 40 ]; do
+    i=$((i + 1))
+    if [ -e /tmp/.X11-unix/X0 ]; then
+      break
+    fi
+    sleep 1
+  done
+  # Extra settle time for dock, wallpaper, extensions, disk probe
+  sleep 20
+  [ -x /opt/minios/setbg.sh ] && /opt/minios/setbg.sh
+  sleep 3
+  # Refresh diagnostics for popup + USB copy
+  [ -x /opt/minios/minios-startup-log ] && /opt/minios/minios-startup-log
+  [ -x /opt/minios/minios-log-usb ] && /opt/minios/minios-log-usb boot
+  if [ -x /usr/local/bin/minios-check ]; then
+    /usr/local/bin/minios-check
+  elif [ -x /opt/minios/minios-check ]; then
+    /opt/minios/minios-check
+  fi
+) >/tmp/minios-check-autostart.log 2>&1 &

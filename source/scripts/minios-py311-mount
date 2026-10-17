@@ -1,0 +1,22 @@
+#!/bin/sh
+# Root helper. Loop-mount the CPython 3.11 squashfs, or unmount it.
+# minios-py311-setup calls this with sudo. Do not extract onto tmpfs.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+DEST=/tmp/minios-py311
+if [ "$1" = "umount" ]; then
+  if mountpoint -q "$DEST" 2>/dev/null; then
+    umount "$DEST" || exit 1
+  fi
+  exit 0
+fi
+SQ="$1"
+[ -n "$SQ" ] && [ -f "$SQ" ] || exit 1
+case "$SQ" in
+  /mnt/*.sqfs|/opt/minios/*.sqfs) ;;
+  *) exit 1 ;;
+esac
+mkdir -p "$DEST"
+if mountpoint -q "$DEST" 2>/dev/null; then
+  exit 0
+fi
+mount -o loop,ro "$SQ" "$DEST"

@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/local/bin/minios-run spreadsheet --tcz gnumeric.tcz -- gnumeric

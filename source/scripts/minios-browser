@@ -1,0 +1,10 @@
+#!/bin/sh
+# MINIOS-GOAL-01: launch embedded Firefox. Never touches Wi-Fi config.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+if [ -x /usr/local/bin/minios-firefox ]; then
+  exec /usr/local/bin/minios-firefox "${@:-https://html.duckduckgo.com/html/}"
+fi
+echo "Embedded Firefox launcher missing (minios-firefox)."
+echo -n "Press Enter... "
+read _ || true
+exit 1

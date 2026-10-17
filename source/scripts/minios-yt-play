@@ -1,0 +1,119 @@
+#!/bin/sh
+# YouTube-only play. Isolated from TikTok.
+# Three messages, then mplayer. Never writes /tmp/minios-mp.reload
+# (that file restarts the player bar and flickers).
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+URL="$1"
+LOG=/tmp/minios-yt-play.log
+echo $$ >/tmp/minios-dl.pid
+GEN=$(cat /tmp/minios-play-gen 2>/dev/null || echo 0)
+{
+  echo "===== yt-play $(date -u) ====="
+  echo "url=$URL gen=$GEN pid=$$"
+} >>"$LOG"
+
+fail() {
+  echo "$1" >>"$LOG"
+  printf '0\n%s\n' "$1" >/tmp/minios-dl.progress
+  echo fail >/tmp/minios-mp.fail
+  rm -f /tmp/minios-dl.pid
+  rmdir /tmp/minios-ytplay.lock 2>/dev/null || true
+  exit 1
+}
+
+[ -n "$URL" ] || fail "No YouTube URL."
+case "$URL" in
+  *tiktok.com*) fail "YouTube play will not open a TikTok URL." ;;
+esac
+
+printf 'youtube\n' >/tmp/minios-player-mode
+# Do not touch /tmp/minios-mp.reload.
+
+PY=""
+if [ -x /usr/local/bin/python3.9 ]; then
+  PY=/usr/local/bin/python3.9
+elif command -v python3.9 >/dev/null 2>&1; then
+  PY=$(command -v python3.9)
+elif command -v python3 >/dev/null 2>&1; then
+  PY=$(command -v python3)
+fi
+[ -n "$PY" ] || fail "python3.9 is not available."
+
+YTD=""
+for p in /opt/minios/bin/yt-dlp-2025.10.14 /opt/minios/bin/yt-dlp-py39; do
+  [ -f "$p" ] || continue
+  YTD=$p
+  break
+done
+[ -n "$YTD" ] || fail "yt-dlp 2025 is not available."
+
+MP=/opt/minios/minios-mplayer
+[ -x "$MP" ] || MP=/usr/local/bin/minios-mplayer
+[ -x "$MP" ] || fail "MiniOS player is not available."
+
+rm -f /tmp/minios-ytplay.mp4 /tmp/minios-ytplay.m4a /tmp/minios-ytplay.mkv \
+      /tmp/minios-ytplay.webm /tmp/minios-ytplay.audio \
+      /tmp/minios-ytplay.a.m4a /tmp/minios-ytplay.a.webm \
+      /tmp/minios-ytplay.en.srt /tmp/minios-ytplay.en.vtt \
+      /tmp/minios-ytplay.sub /tmp/minios-mp.fail
+
+printf '0\nDownloading video\n' >/tmp/minios-dl.progress
+"$PY" "$YTD" --no-playlist --no-warnings --no-check-certificates --newline \
+  -f "18/22/best[height<=360][ext=mp4]/best[height<=240]/worst" \
+  -o "/tmp/minios-ytplay.%(ext)s" \
+  -- "$URL" >>"$LOG" 2>&1 || true
+
+clip=""
+for f in /tmp/minios-ytplay.mp4 /tmp/minios-ytplay.mkv /tmp/minios-ytplay.webm /tmp/minios-ytplay.m4a; do
+  [ -f "$f" ] && [ -s "$f" ] || continue
+  sz=$(wc -c < "$f" | tr -dc '0-9')
+  if [ "${sz:-0}" -gt 8000 ]; then
+    clip=$f
+    break
+  fi
+done
+[ -n "$clip" ] || fail "The video file was not downloaded."
+echo "video=$clip size=$(wc -c < "$clip")" >>"$LOG"
+printf '100\nDownloading video\n' >/tmp/minios-dl.progress
+
+if [ -f /tmp/minios-mp.quit ]; then
+  echo "user quit after video" >>"$LOG"
+  exit 0
+fi
+
+printf '0\nDownloading audio\n' >/tmp/minios-dl.progress
+"$PY" "$YTD" --no-playlist --no-warnings --no-check-certificates \
+  -f "140/139/bestaudio[ext=m4a]" \
+  -o "/tmp/minios-ytplay.a.%(ext)s" \
+  -- "$URL" >>"$LOG" 2>&1 || true
+for f in /tmp/minios-ytplay.a.m4a /tmp/minios-ytplay.a.webm /tmp/minios-ytplay.a.mp4; do
+  [ -f "$f" ] && [ -s "$f" ] || continue
+  echo "$f" >/tmp/minios-ytplay.audio
+  echo "audio=$f" >>"$LOG"
+  break
+done
+printf '100\nDownloading audio\n' >/tmp/minios-dl.progress
+
+printf '0\nDownloading captions\n' >/tmp/minios-dl.progress
+"$PY" "$YTD" --no-playlist --no-warnings --no-check-certificates \
+  --skip-download --write-auto-sub --sub-lang "en.*" \
+  --convert-subs srt -o "/tmp/minios-ytplay" \
+  -- "$URL" >>"$LOG" 2>&1 || true
+for f in /tmp/minios-ytplay.en.srt /tmp/minios-ytplay.en-US.srt /tmp/minios-ytplay.en-orig.srt; do
+  [ -f "$f" ] && [ -s "$f" ] || continue
+  echo "$f" >/tmp/minios-ytplay.sub
+  echo "captions=$f" >>"$LOG"
+  break
+done
+printf '100\nDownloading captions\n' >/tmp/minios-dl.progress
+
+if [ -f /tmp/minios-mp.quit ]; then
+  echo "user quit before play" >>"$LOG"
+  exit 0
+fi
+
+printf '100\nPlaying\n' >/tmp/minios-dl.progress
+echo "play $clip" >>"$LOG"
+rmdir /tmp/minios-ytplay.lock 2>/dev/null || true
+exec "$MP" "$clip"

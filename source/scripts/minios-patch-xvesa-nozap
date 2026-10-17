@@ -1,0 +1,11 @@
+#!/bin/sh
+# Insert -nozap on the stock Xvesa line. Do not replace .xsession.
+# Without -nozap, Ctrl+Alt+Backspace/Delete kills Xvesa (text console).
+set -eu
+for f in "$@"; do
+  [ -f "$f" ] || continue
+  grep -q Xvesa "$f" || continue
+  grep -q -- '-nozap' "$f" && continue
+  sed -i 's/\(Xvesa\) /\1 -nozap /' "$f"
+done
+exit 0

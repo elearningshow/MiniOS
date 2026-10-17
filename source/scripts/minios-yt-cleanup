@@ -1,0 +1,51 @@
+#!/bin/sh
+# YouTube + MiniOS player only. Do not touch TikTok, X, dock, or Wi-Fi.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-yt-cleanup.log
+echo "===== yt-cleanup $(date -u) =====" >>"$LOG"
+
+pkill -f /opt/minios/minios-shorts-play 2>/dev/null || true
+pkill -f /opt/minios/minios-yt-play 2>/dev/null || true
+pkill -f /opt/minios/minios-yt-resolve 2>/dev/null || true
+pkill -f /opt/minios/minios-mplayer 2>/dev/null || true
+pkill -f /opt/minios/minios-player-bar 2>/dev/null || true
+pkill -f /usr/local/bin/minios-player-bar 2>/dev/null || true
+pkill -x mplayer 2>/dev/null || true
+pkill -f 'yt-dlp-2025' 2>/dev/null || true
+pkill -f 'yt-dlp-2026' 2>/dev/null || true
+pkill -f '/tmp/minios-py311/python/bin/python3.11' 2>/dev/null || true
+pkill -f '/opt/minios/bin/yt-dlp' 2>/dev/null || true
+# Do not pkill every python3.9 — Nightly/other apps may need it.
+pkill -f 'minios-yt-resolve' 2>/dev/null || true
+sleep 0.3
+pkill -9 -x mplayer 2>/dev/null || true
+pkill -9 -f /opt/minios/minios-player-bar 2>/dev/null || true
+pkill -9 -f /opt/minios/minios-yt-resolve 2>/dev/null || true
+
+if mountpoint -q /tmp/minios-py311 2>/dev/null; then
+  sudo -n /opt/minios/minios-py311-mount umount >>"$LOG" 2>&1 || \
+    /opt/minios/minios-py311-mount umount >>"$LOG" 2>&1 || true
+fi
+if mountpoint -q /tmp/minios-py311 2>/dev/null; then
+  echo "py311 still mounted" >>"$LOG"
+else
+  rm -rf /tmp/minios-py311
+fi
+rm -rf /tmp/minios-ytplay.lock
+rm -f /tmp/minios-ytplay.mp4 /tmp/minios-ytplay.mkv /tmp/minios-ytplay.webm \
+      /tmp/minios-ytplay.m4a /tmp/minios-ytplay.audio \
+      /tmp/minios-ytplay.a.m4a /tmp/minios-ytplay.a.aac /tmp/minios-ytplay.a.webm \
+      /tmp/minios-ytplay.sub /tmp/minios-ytplay.en.srt /tmp/minios-ytplay.en.vtt \
+      /tmp/minios-ytplay.srt /tmp/minios-dl.progress /tmp/minios-dl.pid \
+      /tmp/minios-mp.cmd /tmp/minios-mp.out /tmp/minios-mp.pid \
+      /tmp/minios-mp.fail /tmp/minios-mp.done /tmp/minios-mp.reload \
+      /tmp/minios-mp.quit /tmp/minios-player-mode /tmp/minios-yt-resolve.cache \
+      /tmp/minios-ca-bundle.crt
+rm -rf /tmp/fltube-cache /tmp/minios-one-image
+
+if [ -x /opt/minios/minios-reclaim ]; then
+  sudo -n /opt/minios/minios-reclaim auto youtube >>"$LOG" 2>&1 || \
+    /opt/minios/minios-reclaim auto youtube >>"$LOG" 2>&1 || true
+fi
+echo "yt-cleanup done" >>"$LOG"
+exit 0

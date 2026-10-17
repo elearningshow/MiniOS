@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Quick Search
+Comment=SEARCH-INPUT-AP-01: type a question, open DuckDuckGo Lite in links
+Exec=/usr/local/bin/minios-run minios-quick-search -- /usr/local/bin/minios-quick-search
+Icon=/usr/local/share/pixmaps/minios/ZV1MI.png
+X-FullPathIcon=/usr/local/share/pixmaps/minios/ZV1MI.png
+Terminal=false
+Categories=Network;WebBrowser;
+StartupNotify=false

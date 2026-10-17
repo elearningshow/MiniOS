@@ -1,0 +1,115 @@
+#!/bin/sh
+# v0.2.27: always exec FLTube. Do not tce-load. Do not block on tcedir.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export DISPLAY="${DISPLAY:-:0}"
+export HOME="${HOME:-/home/tc}"
+LOG=/tmp/minios-youtube.log
+: > "$LOG"
+# Leftovers from CAD / Refresh desktop must not block the next YouTube search.
+# YouTube IPC only. Do not touch /tmp/minios-tt-*.
+rm -f /tmp/minios-mp.quit /tmp/minios-mp.fail /tmp/minios-mp.reload
+
+# Onboot tcz binaries live here if /usr/local/bin/mplayer was not linked.
+for d in /tmp/tcloop/*/usr/local/bin; do
+  [ -d "$d" ] || continue
+  PATH="$d:$PATH"
+done
+for d in /tmp/tcloop/*/usr/local/lib; do
+  [ -d "$d" ] || continue
+  LD_LIBRARY_PATH="$d${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+done
+export PATH LD_LIBRARY_PATH
+
+{
+  echo "minios-youtube $(date -u)"
+  echo "DISPLAY=${DISPLAY-}"
+  echo "USER=$(id -un) HOME=$HOME"
+  echo "python3=$(command -v python3)"
+  python3 --version 2>&1
+  echo "yt-dlp=$(command -v yt-dlp)"
+  echo "mplayer=$(command -v mplayer)"
+  echo "fltube=$(command -v fltube)"
+} >> "$LOG" 2>&1
+
+fail() {
+  echo "YouTube did not open. $1" >> "$LOG"
+  if [ -x /opt/minios/minios-youtube-fail ]; then
+    /opt/minios/minios-youtube-fail
+  elif [ -x /usr/local/bin/minios-youtube-fail ]; then
+    /usr/local/bin/minios-youtube-fail
+  fi
+  exit 1
+}
+
+if [ -x /opt/minios/minios-fix-tcedir ]; then
+  sudo -n /opt/minios/minios-fix-tcedir >>"$LOG" 2>&1 || \
+    /opt/minios/minios-fix-tcedir >>"$LOG" 2>&1 || true
+fi
+# Sound-up mounts many tczs and can take >15s on the Sempron. Do not block FLTube.
+if [ -x /opt/minios/minios-sound-up ]; then
+  ( sudo -n /opt/minios/minios-sound-up >>"$LOG" 2>&1 || \
+      /opt/minios/minios-sound-up >>"$LOG" 2>&1 || true ) &
+fi
+
+# FLTube does not need tcedir. Never refuse to start because it is a directory.
+command -v fltube >/dev/null || fail "fltube missing"
+[ -n "$DISPLAY" ] || fail "DISPLAY empty"
+
+mkdir -p "$HOME/.config/fltube" "$HOME/.local/share/fltube" /tmp/fltube-cache
+if [ ! -f "$HOME/.config/fltube/fltube.conf" ]; then
+  if [ -f /usr/local/etc/fltube/fltube.conf ]; then
+    cp -f /usr/local/etc/fltube/fltube.conf "$HOME/.config/fltube/fltube.conf"
+  elif [ -f /opt/minios/fltube.conf ]; then
+    cp -f /opt/minios/fltube.conf "$HOME/.config/fltube/fltube.conf"
+  fi
+fi
+# Always allow video without /dev/snd. Use the wrapper so libmng is loaded.
+for cf in "$HOME/.config/fltube/fltube.conf" /usr/local/etc/fltube/fltube.conf /opt/minios/fltube.conf; do
+  [ -f "$cf" ] || continue
+  if grep -q '^STREAM_PLAYER_PATH' "$cf"; then
+    sed -i 's|^STREAM_PLAYER_PATH.*|STREAM_PLAYER_PATH = minios-mplayer|' "$cf"
+  fi
+  if grep -q '^STREAM_PLAYER_PARAMS' "$cf"; then
+    sed -i 's|^STREAM_PLAYER_PARAMS.*|STREAM_PLAYER_PARAMS = -zoom -vo x11 -ao alsa,oss,null -demuxer lavf -user-agent Mozilla/5.0|' "$cf"
+  fi
+  if grep -q '^ENABLE_ALTERNATIVE_STREAM_METHOD' "$cf"; then
+    sed -i 's|^ENABLE_ALTERNATIVE_STREAM_METHOD.*|ENABLE_ALTERNATIVE_STREAM_METHOD = false|' "$cf"
+  fi
+done
+
+usb_log() {
+  if [ -x /opt/minios/minios-log-usb ]; then
+    sudo -n /opt/minios/minios-log-usb "$1" >/dev/null 2>&1 || \
+      /opt/minios/minios-log-usb "$1" >/dev/null 2>&1 || true
+  fi
+}
+
+FLTUBE=$(command -v fltube)
+echo "exec fltube argv=$FLTUBE" >> "$LOG"
+usb_log youtube-open &
+echo "starting_fltube" >> "$LOG"
+# Same FLTube binary as v0.2.106. Focus helper only clicks Term/URL.
+"$FLTUBE" >> "$LOG" 2>&1 &
+YPID=$!
+if [ -x /opt/minios/minios-yt-focus ]; then
+  /opt/minios/minios-yt-focus >>"$LOG" 2>&1 || true
+elif [ -x /usr/local/bin/minios-yt-focus ]; then
+  /usr/local/bin/minios-yt-focus >>"$LOG" 2>&1 || true
+fi
+wait "$YPID"
+ec=$?
+echo "fltube_exit=$ec" >>"$LOG"
+# Never block close/reopen on the USB copy (v0.2.51).
+usb_log youtube-exit &
+if [ -x /opt/minios/minios-loading ]; then
+  /opt/minios/minios-loading stop >/dev/null 2>&1 || true
+fi
+# Closing FLTube after a play returns non-zero. That is not a start failure.
+# v0.2.39 photo: video played, then "YouTube did not open" on exit.
+# Same RAM, zram, and swap release as closing TikTok search.
+if [ -x /opt/minios/minios-gui-close ]; then
+  /opt/minios/minios-gui-close youtube
+elif [ -x /usr/local/bin/minios-gui-close ]; then
+  /usr/local/bin/minios-gui-close youtube
+fi
+exit 0

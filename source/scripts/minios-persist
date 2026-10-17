@@ -1,0 +1,88 @@
+#!/bin/sh
+# Enable TinyCore persistence on the live USB (mydata.tgz + tce dir).
+# Does not touch the internal hard drive.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOG=/tmp/minios-persist.log
+
+need_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    exec sudo -E "$0" "$@"
+  fi
+}
+need_root "$@"
+
+{
+  echo "======== minios-persist $(date) ========"
+
+  # Find boot USB (has cde/optional)
+  USB=""
+  for d in /mnt/*; do
+    if [ -d "$d/cde/optional" ]; then
+      USB="$d"
+      break
+    fi
+  done
+  if [ -z "$USB" ]; then
+    # try to mount boot device
+    for p in /dev/sda1 /dev/sdb1 /dev/sdc1 /dev/sdd1; do
+      [ -b "$p" ] || continue
+      mkdir -p /mnt/bootusb
+      if mount "$p" /mnt/bootusb 2>/dev/null && [ -d /mnt/bootusb/cde/optional ]; then
+        USB=/mnt/bootusb
+        break
+      fi
+      umount /mnt/bootusb 2>/dev/null || true
+    done
+  fi
+
+  if [ -z "$USB" ] || [ ! -d "$USB/cde/optional" ]; then
+    echo "FAIL: boot USB (cde/optional) not found"
+    echo "PERSIST=NOT_READY"
+    exit 1
+  fi
+  echo "USB=$USB"
+
+  mkdir -p "$USB/tce/optional"
+  # Point TinyCore tce dir at this USB
+  if [ -L /etc/sysconfig/tcedir ] || [ -e /etc/sysconfig/tcedir ]; then
+    echo "tcedir was: $(readlink /etc/sysconfig/tcedir 2>/dev/null || cat /etc/sysconfig/tcedir 2>/dev/null)"
+  fi
+  # AP-03: do not retarget tcedir away from cde/. Empty tce/optional
+  # made Tiny Core skip Xvesa and stop at the text console.
+  echo "Keeping extension directory on cde/ (graphical packages)."
+  echo "tce/ is only for extra saved files / mydata.tgz — not the boot package source."
+  echo "tcedir stays: $(readlink /etc/sysconfig/tcedir 2>/dev/null || echo cde-default)"
+
+  # Seed onboot from cde if empty
+  if [ ! -s "$USB/tce/onboot.lst" ] && [ -f "$USB/cde/onboot.lst" ]; then
+    cp -f "$USB/cde/onboot.lst" "$USB/tce/onboot.lst"
+    echo "copied onboot.lst from cde"
+  fi
+
+  # filetool backup list (home + opt survive reboot)
+  if [ -f /opt/.filetool.lst ]; then
+    grep -qx home /opt/.filetool.lst || echo home >> /opt/.filetool.lst
+    grep -qx opt /opt/.filetool.lst || echo opt >> /opt/.filetool.lst
+  fi
+
+  # Marker that we enabled persistence this session
+  mkdir -p /opt/minios
+  echo "persist-enabled $(date)" > /opt/minios/persist.stamp
+  echo "persist-enabled $(date)" > "$USB/tce/PERSISTENCE-ON.txt"
+
+  # Backup now
+  if command -v filetool.sh >/dev/null 2>&1; then
+    filetool.sh -b && echo "filetool backup OK"
+  else
+    echo "NOTE: filetool.sh not in PATH — TinyCore will backup on shutdown if BACKUP=1"
+  fi
+
+  echo "BACKUP=1" | tee /etc/sysconfig/backup >/dev/null
+  echo "PERSIST=READY usb=$USB"
+  echo "After reboot, /opt/minios/persist.stamp and tce/PERSISTENCE-ON.txt should remain."
+  echo "======== end minios-persist ========"
+} 2>&1 | tee "$LOG"
+
+echo "Log: $LOG"
+echo -n "Press Enter to close... "
+read _ans || true

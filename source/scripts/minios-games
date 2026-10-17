@@ -1,0 +1,426 @@
+#!/bin/sh
+# Load one small game, then unload only the packages this play mounted.
+# games.list columns (TAB): label  tcz  command  min_free_MB
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LIST="${MINIOS_GAMES_LIST:-/opt/minios/games.list}"
+LOG=/tmp/minios-games.log
+MIRROR=http://repo.tinycorelinux.net/16.x/x86/tcz
+OPT=""
+SEEN=""
+MOUNTED=""
+
+free_mb() {
+  awk '/MemAvailable:/ { print int($2 / 1024); found = 1 } END { if (!found) print 0 }' /proc/meminfo
+}
+
+list_games() {
+  if [ ! -f "$LIST" ]; then
+    echo "Game list is missing."
+    return 1
+  fi
+  awk -F '\t' '!/^#/ && NF >= 4 { n = n + 1; print n "  " $1 " (needs " $4 " MB free)" }' "$LIST"
+}
+
+find_store() {
+  local tcedir d
+  tcedir=""
+  if [ -L /etc/sysconfig/tcedir ]; then
+    tcedir=$(readlink /etc/sysconfig/tcedir)
+  fi
+  if [ -z "$tcedir" ] || [ ! -d "$tcedir/optional" ]; then
+    for d in /mnt/*/cde /mnt/*/tce /cde /tce; do
+      if [ -f "$d/optional/mplayer-cli.tcz" ]; then
+        tcedir=$d
+        break
+      fi
+    done
+  fi
+  if [ -z "$tcedir" ] || [ ! -d "$tcedir/optional" ]; then
+    for d in /mnt/*/cde /mnt/*/tce /cde /tce; do
+      if [ -d "$d/optional" ]; then
+        tcedir=$d
+        break
+      fi
+    done
+  fi
+  if [ -z "$tcedir" ] || [ ! -d "$tcedir/optional" ]; then
+    echo "Could not find the extension store."
+    return 1
+  fi
+  OPT="$tcedir/optional"
+  return 0
+}
+
+is_mounted() {
+  if command -v mountpoint >/dev/null 2>&1; then
+    mountpoint -q "/tmp/tcloop/$1" 2>/dev/null && return 0
+  fi
+  awk -v m="/tmp/tcloop/$1" '$2 == m { found = 1 } END { exit !found }' /proc/mounts
+}
+
+copy_store() {
+  local src dest
+  src=$1
+  dest=$2
+  if cp -f "$src" "$dest" 2>>"$LOG"; then
+    return 0
+  fi
+  sudo -n cp -f "$src" "$dest" >>"$LOG" 2>&1
+}
+
+http_get() {
+  local url dest secs code
+  url=$1
+  dest=$2
+  secs=${3:-60}
+  rm -f "$dest"
+  if command -v curl >/dev/null 2>&1; then
+    code=$(curl -sS -L --max-time "$secs" -o "$dest" -w '%{http_code}' "$url" 2>>"$LOG") || code=000
+    if [ "$code" = "200" ] && [ -s "$dest" ]; then
+      return 0
+    fi
+    rm -f "$dest"
+    [ "$code" = "404" ] && return 2
+    return 1
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget -q -O "$dest" --timeout="$secs" "$url" >>"$LOG" 2>&1 || {
+      rm -f "$dest"
+      return 1
+    }
+    [ -s "$dest" ] && return 0
+    rm -f "$dest"
+    return 1
+  fi
+  return 1
+}
+
+ensure_dep() {
+  local pkg strict tmp rc
+  pkg=$1
+  strict=$2
+  if [ -e "$OPT/$pkg.dep" ] || [ -f "/tmp/minios-games-nodep.$pkg" ]; then
+    return 0
+  fi
+  tmp=/tmp/minios-games-dep.$$
+  http_get "$MIRROR/$pkg.dep" "$tmp" 20
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    copy_store "$tmp" "$OPT/$pkg.dep" || { rm -f "$tmp"; return 1; }
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  if [ "$rc" -eq 2 ]; then
+    : > "/tmp/minios-games-nodep.$pkg"
+    return 0
+  fi
+  if [ "$strict" = "1" ]; then
+    echo "Could not read the package list for $pkg. Connect Wi-Fi and try again."
+    return 1
+  fi
+  return 0
+}
+
+fetch_pkg() {
+  local pkg tmp want got sig avail
+  pkg=$1
+  if [ -s "$OPT/$pkg" ]; then
+    ensure_dep "$pkg" 0 || return 1
+    return 0
+  fi
+  avail=$(df -k "$OPT" | awk 'NR > 1 { v = $4 } END { print v }')
+  case $avail in
+    ''|*[!0-9]*) avail=0 ;;
+  esac
+  if [ "$avail" -lt 20480 ]; then
+    echo "The USB does not have enough free space to download $pkg."
+    return 1
+  fi
+  tmp=/tmp/minios-games-pkg.$$
+  echo "Downloading $pkg..."
+  echo "download $pkg" >>"$LOG"
+  if ! http_get "$MIRROR/$pkg" "$tmp" 90; then
+    echo "Could not download $pkg. Connect Wi-Fi and try again."
+    return 1
+  fi
+  sig=$(dd if="$tmp" bs=4 count=1 2>/dev/null || true)
+  if [ "$sig" != "hsqs" ]; then
+    rm -f "$tmp"
+    echo "Download of $pkg was not a package."
+    return 1
+  fi
+  if ! http_get "$MIRROR/$pkg.md5.txt" "/tmp/minios-games-md5.$$" 30; then
+    rm -f "$tmp" /tmp/minios-games-md5.$$
+    echo "Download of $pkg did not match its checksum."
+    return 1
+  fi
+  want=$(awk 'NR == 1 { print $1 }' /tmp/minios-games-md5.$$)
+  got=$(md5sum "$tmp" | awk '{ print $1 }')
+  if [ -z "$want" ] || [ "$want" != "$got" ]; then
+    rm -f "$tmp" /tmp/minios-games-md5.$$
+    echo "Download of $pkg did not match its checksum."
+    return 1
+  fi
+  if ! copy_store "$tmp" "$OPT/$pkg"; then
+    rm -f "$tmp" /tmp/minios-games-md5.$$
+    echo "Could not save $pkg."
+    return 1
+  fi
+  copy_store /tmp/minios-games-md5.$$ "$OPT/$pkg.md5.txt" || true
+  rm -f "$tmp" /tmp/minios-games-md5.$$
+  sync
+  ensure_dep "$pkg" 1 || return 1
+  return 0
+}
+
+link_tree() {
+  local base root log
+  base=$1
+  root=/tmp/tcloop/$base
+  log=/tmp/minios-games-links.$base
+  : >"$log"
+  sudo -n /bin/sh -s >>"$LOG" 2>&1 << EOF || echo "link failed $base" >>"$LOG"
+root='$root'
+log='$log'
+: > "\$log"
+find "\$root" \\( -type f -o -type l \\) | while read -r src; do
+  rel=\${src#\$root}
+  [ -n "\$rel" ] || continue
+  if [ -e "\$rel" ] || [ -L "\$rel" ]; then
+    continue
+  fi
+  mkdir -p "\$(dirname "\$rel")"
+  if ln -s "\$src" "\$rel"; then
+    printf '%s\n' "\$rel" >> "\$log"
+  fi
+done
+EOF
+}
+
+mount_one() {
+  local base inst i pid
+  base=$1
+  if is_mounted "$base"; then
+    return 0
+  fi
+  if [ ! -s "$OPT/$base.tcz" ]; then
+    echo "Missing $base.tcz"
+    return 1
+  fi
+  sudo -n mkdir -p "/tmp/tcloop/$base" >>"$LOG" 2>&1 || mkdir -p "/tmp/tcloop/$base"
+  if ! sudo -n mount -o loop,ro "$OPT/$base.tcz" "/tmp/tcloop/$base" >>"$LOG" 2>&1; then
+    echo "Could not mount $base.tcz"
+    return 1
+  fi
+  printf '%s\n' "$base" >>"$MOUNTED"
+  echo "mounted $base" >>"$LOG"
+  link_tree "$base"
+  sudo -n ldconfig >>"$LOG" 2>&1 || true
+  inst=/usr/local/tce.installed/$base
+  if [ -x "$inst" ]; then
+    sudo -n "$inst" >>"$LOG" 2>&1 &
+    pid=$!
+    i=0
+    while [ "$i" -lt 12 ]; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 1
+      i=$((i + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || sudo -n kill "$pid" 2>/dev/null || true
+      echo "stopped slow setup $base" >>"$LOG"
+    fi
+    wait "$pid" 2>/dev/null || true
+  fi
+  return 0
+}
+
+load_one() {
+  local pkg base line dep
+  pkg=$1
+  base=${pkg%.tcz}
+  pkg=$base.tcz
+  if grep -Fxq "$base" "$SEEN" 2>/dev/null; then
+    return 0
+  fi
+  printf '%s\n' "$base" >>"$SEEN"
+  fetch_pkg "$pkg" || return 1
+  if [ -s "$OPT/$pkg.dep" ]; then
+    while IFS= read -r line <&3 || [ -n "$line" ]; do
+      dep=$(printf '%s' "$line" | tr -d '[:space:]')
+      [ -n "$dep" ] || continue
+      case $dep in
+        \#*) continue ;;
+      esac
+      case $dep in
+        *.tcz) ;;
+        *) dep=$dep.tcz ;;
+      esac
+      load_one "$dep" || return 1
+    done 3< "$OPT/$pkg.dep"
+  fi
+  mount_one "$base"
+}
+
+unload_new() {
+  local base log link still
+  [ -n "$MOUNTED" ] && [ -f "$MOUNTED" ] || return 0
+  awk '{ a[++n] = $0 } END { for (i = n; i >= 1; i--) print a[i] }' "$MOUNTED" > /tmp/minios-games-unload.txt
+  while IFS= read -r base <&3 || [ -n "$base" ]; do
+    [ -n "$base" ] || continue
+    log=/tmp/minios-games-links.$base
+    still=0
+    if is_mounted "$base"; then
+      if ! sudo -n umount "/tmp/tcloop/$base" >>"$LOG" 2>&1; then
+        sudo -n umount -l "/tmp/tcloop/$base" >>"$LOG" 2>&1 || still=1
+      fi
+    fi
+    if [ "$still" = "0" ] && [ -f "$log" ]; then
+      while IFS= read -r link <&4 || [ -n "$link" ]; do
+        [ -n "$link" ] || continue
+        case $link in
+          /*) ;;
+          *) continue ;;
+        esac
+        [ -L "$link" ] || continue
+        sudo -n rm -f "$link"
+      done 4< "$log"
+      rm -f "$log"
+    fi
+    if [ "$still" = "1" ]; then
+      echo "could not unload $base" >>"$LOG"
+    fi
+  done 3< /tmp/minios-games-unload.txt
+  rm -f /tmp/minios-games-unload.txt
+  sudo -n ldconfig >/dev/null 2>&1 || true
+  : >"$MOUNTED"
+}
+
+finish_play() {
+  unload_new
+  rm -f "$SEEN" "$MOUNTED"
+}
+
+play() {
+  local label tcz cmd need have line libs d rc
+  case $1 in
+    ''|*[!0-9]*)
+      echo "Type the number from the list."
+      return 1
+      ;;
+  esac
+  if [ ! -f "$LIST" ]; then
+    echo "Game list is missing."
+    return 1
+  fi
+  line=$(awk -F '\t' -v n="$1" '!/^#/ && NF >= 4 { i = i + 1; if (i == n) print }' "$LIST")
+  if [ -z "$line" ]; then
+    echo "No such game."
+    return 1
+  fi
+  label=$(printf '%s' "$line" | cut -f1)
+  tcz=$(printf '%s' "$line" | cut -f2)
+  cmd=$(printf '%s' "$line" | cut -f3)
+  need=$(printf '%s' "$line" | cut -f4)
+  case $need in
+    ''|*[!0-9]*)
+      echo "Game list row for $label is not usable."
+      return 1
+      ;;
+  esac
+  case $tcz in
+    *.tcz) ;;
+    *) tcz=$tcz.tcz ;;
+  esac
+  have=$(free_mb)
+  echo "$(date -u) play=$label tcz=$tcz free=${have}MB need=${need}MB" >>"$LOG"
+  if [ "$have" -lt "$need" ]; then
+    echo "Not enough free RAM for $label ($have MB free, $need MB needed)."
+    return 1
+  fi
+  if [ -z "$DISPLAY" ]; then
+    echo "Open Games from the desktop."
+    return 1
+  fi
+  find_store || return 1
+  SEEN=/tmp/minios-games-seen.$$
+  MOUNTED=/tmp/minios-games-mounted.$$
+  : >"$SEEN"
+  : >"$MOUNTED"
+  trap 'finish_play' EXIT
+  trap 'finish_play; exit 1' INT TERM HUP
+  echo "Loading $label..."
+  if ! load_one "$tcz"; then
+    echo "Could not load $label."
+    finish_play
+    return 1
+  fi
+  sudo -n ldconfig >/dev/null 2>&1 || true
+  libs=""
+  for d in /tmp/tcloop/*/usr/local/lib; do
+    [ -d "$d" ] || continue
+    libs="$d:$libs"
+  done
+  echo "Starting $label. Close the game to return here."
+  (
+    cd "$HOME" 2>/dev/null || cd /home/tc 2>/dev/null || true
+    export LD_LIBRARY_PATH="${libs}${LD_LIBRARY_PATH:-}"
+    export PATH="/tmp/tcloop/${tcz%.tcz}/usr/local/bin:$PATH"
+    export SDL_VIDEODRIVER=x11
+    export SDL_AUDIODRIVER=alsa
+    export NO_AT_BRIDGE=1
+    export GDK_USE_XFT=0
+    export GTK_IM_MODULE=xim
+    sh -c "$cmd"
+  )
+  rc=$?
+  finish_play
+  echo "$label closed."
+  return "$rc"
+}
+
+menu() {
+  local n
+  while true; do
+    echo
+    echo "MiniOS Games"
+    echo "Free RAM: $(free_mb) MB"
+    list_games || return 1
+    echo
+    echo "Type a number and press Enter."
+    echo "Press Enter alone to close."
+    read -r n || return 0
+    [ -n "$n" ] || return 0
+    play "$n"
+  done
+}
+
+case $1 in
+  list)
+    list_games
+    ;;
+  play)
+    play "$2"
+    ;;
+  "")
+    if [ ! -t 0 ] && [ -z "$MINIOS_GAMES_INNER" ]; then
+      if [ -z "$DISPLAY" ]; then
+        echo "Open Games from the desktop."
+        exit 1
+      fi
+      if ! command -v aterm >/dev/null 2>&1; then
+        echo "The game menu needs a terminal."
+        exit 1
+      fi
+      MINIOS_GAMES_INNER=1
+      export MINIOS_GAMES_INNER
+      exec aterm -title "MiniOS Games" -geometry 70x18+40+20 -e /usr/local/bin/minios-games
+    fi
+    menu
+    ;;
+  *)
+    echo "usage: minios-games list | play N"
+    exit 1
+    ;;
+esac

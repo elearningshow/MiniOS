@@ -1,0 +1,23 @@
+#!/bin/sh
+# Recover graphical desktop from the text console. Do NOT write a fake .xsession.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export HOME="${HOME:-/home/tc}"
+
+echo "MiniOS: starting graphical desktop (stock Tiny Core startx)..."
+if [ ! -x /usr/local/bin/startx ] && [ ! -x /usr/bin/startx ]; then
+  echo "startx not found. Loading X from cde/optional if present..."
+  if command -v tce-load >/dev/null 2>&1; then
+    tce-load -i Xvesa flwm Xprogs Xlibs wbar 2>/dev/null || true
+  fi
+fi
+
+if [ -f "$HOME/.xsession" ] && ! grep -q Xvesa "$HOME/.xsession" 2>/dev/null; then
+  echo "NOTE: $HOME/.xsession does not start Xvesa — moving it aside"
+  mv -f "$HOME/.xsession" "$HOME/.xsession.broken-ap02"
+fi
+
+if command -v startx >/dev/null 2>&1; then
+  exec startx
+fi
+echo "FAIL: startx still missing. Boot with cde extensions (not an empty tce folder)."
+exit 1

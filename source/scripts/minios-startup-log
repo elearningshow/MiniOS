@@ -1,0 +1,162 @@
+#!/bin/sh
+# Write comprehensive boot diagnostics to /tmp/startup.log (and USB if possible).
+# Never silent-fail: always produce a file the user can copy back.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export HOME="${HOME:-/home/tc}"
+export DISPLAY="${DISPLAY:-:0}"
+
+LOG=/tmp/startup.log
+STAMP=$(date -Iseconds 2>/dev/null || date)
+
+# Prefer rewriting fully each run so USB gets latest
+{
+  echo "======== MiniOS TinyCore startup.log ========"
+  echo "time:     $STAMP"
+  echo "user:     $(id 2>/dev/null || true)"
+  echo "host:     $(hostname 2>/dev/null || true)"
+  echo "DISPLAY:  ${DISPLAY:-unset}"
+  echo ""
+
+  echo "----- uname / version -----"
+  uname -a 2>/dev/null || true
+  [ -f /etc/sysconfig/tcversion ] && { echo -n "tcversion: "; cat /etc/sysconfig/tcversion; }
+  version 2>/dev/null | head -5 || true
+  echo ""
+
+  echo "----- wallpaper -----"
+  if [ -f /opt/minios/mini-os-bg.jpg ]; then
+    echo "IMAGE_OK /opt/minios/mini-os-bg.jpg"
+    ls -l /opt/minios/mini-os-bg.jpg 2>/dev/null
+  else
+    echo "IMAGE_MISSING"
+  fi
+  if [ -f /tmp/minios-poc-wallpaper.log ]; then
+    echo "--- setbg log ---"
+    cat /tmp/minios-poc-wallpaper.log
+  else
+    echo "setbg log missing"
+  fi
+  if grep -q 'SUCCESS feh --bg-scale\|SUCCESS hsetroot' /tmp/minios-poc-wallpaper.log 2>/dev/null; then
+    echo "WALLPAPER=OK"
+  else
+    echo "WALLPAPER=CHECK"
+  fi
+  echo ""
+
+  echo "----- network interfaces -----"
+  if command -v ip >/dev/null 2>&1; then
+    ip link 2>/dev/null || true
+    echo "--- addr ---"
+    ip addr 2>/dev/null || true
+  else
+    ifconfig -a 2>/dev/null || true
+  fi
+  echo ""
+  echo "----- iwconfig -----"
+  iwconfig 2>/dev/null || echo "(no iwconfig output)"
+  echo ""
+  echo "----- iw dev -----"
+  iw dev 2>/dev/null || echo "(no iw)"
+  echo ""
+
+  WLAN_IFACE=""
+  for n in $(iwconfig 2>/dev/null | awk '/^[a-zA-Z0-9]/{print $1}'); do
+    WLAN_IFACE="$n"
+    break
+  done
+  if [ -z "$WLAN_IFACE" ]; then
+    WLAN_IFACE=$(ip link 2>/dev/null | awk -F': ' '/^[0-9]+: wl/{print $2; exit}')
+  fi
+  if [ -n "$WLAN_IFACE" ]; then
+    echo "WLAN_IFACE=$WLAN_IFACE"
+  else
+    echo "WLAN_IFACE=NONE"
+  fi
+  echo ""
+
+  echo "----- b43 firmware files -----"
+  for d in /lib/firmware/b43 /usr/local/lib/firmware/b43 \
+           /lib/firmware/b43-open /usr/local/lib/firmware/b43-open; do
+    if [ -d "$d" ]; then
+      echo "DIR $d"
+      ls -la "$d" 2>/dev/null | head -40
+    else
+      echo "MISSING_DIR $d"
+    fi
+  done
+  if [ -f /lib/firmware/b43/ucode5.fw ] || [ -f /usr/local/lib/firmware/b43/ucode5.fw ]; then
+    echo "FIRMWARE_B43=OK (ucode5.fw present)"
+  else
+    echo "FIRMWARE_B43=MISSING (ucode5.fw not found)"
+  fi
+  if [ -f /lib/firmware/regulatory.db ] || [ -f /usr/local/lib/firmware/regulatory.db ]; then
+    echo "REGULATORY_DB=OK"
+  else
+    echo "REGULATORY_DB=MISSING"
+  fi
+  echo ""
+
+  echo "----- PCI / USB network -----"
+  if command -v lspci >/dev/null 2>&1; then
+    lspci 2>/dev/null | grep -iE 'network|ethernet|wireless|wifi|802\.11|wlan|broadcom|bcm' || lspci 2>/dev/null | head -25
+  else
+    echo "lspci missing"
+  fi
+  echo "--- lsusb ---"
+  lsusb 2>/dev/null | head -20 || echo "lsusb missing"
+  echo ""
+
+  echo "----- modules -----"
+  lsmod 2>/dev/null | grep -iE 'b43|cfg80211|mac80211|ssb|bcma|brcm|ath|iwl|ipw|rtl' || echo "(none)"
+  echo ""
+
+  echo "----- dmesg (wifi/firmware) -----"
+  dmesg 2>/dev/null | grep -iE 'b43|firmware|wlan|wifi|cfg80211|mac80211|regulatory|ssb|bcma|Broadcom 43' | tail -60 || true
+  echo ""
+
+  echo "----- tools present -----"
+  for c in feh wifi.sh iwconfig iw wpa_supplicant lspci minios-wifi minios-hwinfo minios-check yad; do
+    if command -v "$c" >/dev/null 2>&1; then
+      echo "OK $c=$(command -v $c)"
+    else
+      echo "MISSING $c"
+    fi
+  done
+  echo ""
+
+  echo "----- RESULT -----"
+  WP=FAIL
+  FW=FAIL
+  WI=FAIL
+  grep -q 'SUCCESS feh --bg-scale\|SUCCESS hsetroot' /tmp/minios-poc-wallpaper.log 2>/dev/null && WP=OK
+  { [ -f /lib/firmware/b43/ucode5.fw ] || [ -f /usr/local/lib/firmware/b43/ucode5.fw ]; } && FW=OK
+  [ -n "$WLAN_IFACE" ] && [ "$WLAN_IFACE" != "NONE" ] && WI=OK
+  echo "WALLPAPER=$WP"
+  echo "FIRMWARE_B43=$FW"
+  echo "WLAN_IFACE=${WLAN_IFACE:-NONE}"
+  if [ "$WI" = "OK" ]; then
+    echo "WIFI_READY=YES — run: sudo minios-wifi   or   sudo wifi.sh"
+  else
+    echo "WIFI_READY=NO — need b43 firmware load + wlan interface"
+  fi
+  echo "======== end startup.log ========"
+} >"$LOG" 2>&1
+
+# Copy to USB boot media if writable (Windows can read FAT)
+for d in /mnt/*; do
+  [ -d "$d/cde/optional" ] || continue
+  [ -w "$d" ] || continue
+  cp -f "$LOG" "$d/startup.log" 2>/dev/null || true
+  # also keep previous name used in docs
+  cp -f "$LOG" "$d/minios-startup.log" 2>/dev/null || true
+done
+cp -f "$LOG" "$HOME/startup.log" 2>/dev/null || true
+if [ -x /opt/minios/minios-log-usb ]; then
+  /opt/minios/minios-log-usb boot >/dev/null 2>&1 || true
+fi
+
+# stamp for quick checks
+grep -q 'FIRMWARE_B43=OK' "$LOG" 2>/dev/null && touch /tmp/minios-firmware-b43.ok
+grep -q 'WLAN_IFACE=NONE' "$LOG" 2>/dev/null || grep -q '^WLAN_IFACE=wl' "$LOG" 2>/dev/null && touch /tmp/minios-wlan.ok
+
+exit 0

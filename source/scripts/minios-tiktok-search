@@ -1,0 +1,1828 @@
+#!/bin/sh
+# TikTok search only. This script does not call YouTube.
+# search_fast_show asks Startpage first. DuckDuckGo, Bing, and Yahoo
+# run only when that page is short. A row is printed only when the file
+# start is an H.264 video this player can open. The list stops around 16.
+# The check waits 1.15 seconds. Status lines name the site and a time.
+# This is the v0.2.230 search. More videos still skips clips already started.
+export PATH="/opt/minios/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Q="${1:-}"
+TT_BUDGET_ARG="${2:-30}"
+LOG=/tmp/minios-tiktok-search.log
+ROWS=/tmp/minios-tt-rows.txt
+PULLED=/tmp/minios-tt-pulled.txt
+LEFT=/tmp/minios-tt-left.txt
+SHOWN=/tmp/minios-tt-shown.txt
+CHECKED=/tmp/minios-tt-checked.txt
+REASON=/tmp/minios-tt-reason.txt
+NEXT=/tmp/minios-tt-next.txt
+CK=/tmp/minios-tt-cookies-$$
+EXPY=/tmp/minios-tt-extract.py
+TARGET=70
+LIVE_KEEP=12
+LIVE_TRIES=16
+DEADLINE_SECS=40
+CONFIRM_KEEP=30
+CONFIRM_TRIES=60
+CONFIRM_SECS=110
+FAST_SHOW=16
+FAST_TRIES=22
+FAST_CAP=20
+START=$(date +%s)
+
+{
+  echo "===== tiktok-search $(date -u) ====="
+  echo "q=$Q"
+} >>"$LOG"
+trap 'pkill -P $$ >/dev/null 2>&1 || true; rm -f "$CK" "$EXPY" "$ROWS.four" "$ROWS.maybe" /tmp/minios-tt-chunk.html /tmp/minios-tt-chunk.code /tmp/minios-tt-confirm.ok /tmp/minios-tt-confirm.json /tmp/minios-tt-confirm.py /tmp/minios-tt-fast.ok /tmp/minios-tt-fast.json /tmp/minios-tt-fast.py /tmp/minios-tt-prefix.hdr /tmp/minios-tt-prefix.mp4 /tmp/minios-tt-prefix.http /tmp/minios-tt-short-hold.txt /tmp/minios-tt-more-hold.txt /tmp/minios-tt-rows.unchecked' EXIT
+
+rm -f "$REASON"
+if [ -z "$Q" ]; then
+  echo "no query" >>"$LOG"
+  exit 0
+fi
+
+PY=""
+if [ -x /usr/local/bin/python3.9 ]; then
+  PY=/usr/local/bin/python3.9
+elif command -v python3.9 >/dev/null 2>&1; then
+  PY=$(command -v python3.9)
+elif command -v python3 >/dev/null 2>&1; then
+  PY=$(command -v python3)
+fi
+
+# A pasted link is one row, and only after it is a real video URL.
+case "$Q" in
+*tiktok.com/*)
+  if [ -z "$PY" ]; then
+    echo "paste needs python" >>"$LOG"
+    echo not-video >"$REASON"
+    exit 1
+  fi
+  row=$("$PY" - "$Q" <<'PYEOF'
+import json, re, ssl, sys, urllib.parse, urllib.request
+raw = sys.argv[1].strip()
+bad = {"photo", "tag", "music", "live", "explore", "login", "discover", "search"}
+def norm(u):
+    u = (u or "").strip().split("#", 1)[0].split("?", 1)[0].rstrip("/")
+    if u.startswith("//"): u = "https:" + u
+    if u.startswith("http://"): u = "https://" + u[7:]
+    if not u.startswith("http"): u = "https://" + u.lstrip("/")
+    return u
+def canon_of(u):
+    m = re.match(r"^https://(?:www\.)?tiktok\.com/@([A-Za-z0-9._]+)/video/([0-9]+)$", u, re.I)
+    return "https://www.tiktok.com/@%s/video/%s" % (m.group(1), m.group(2)) if m else ""
+def short_of(u):
+    return re.match(r"^https://(?:(?:www\.)?tiktok\.com/t/[A-Za-z0-9]+|(?:vm|vt)\.tiktok\.com/[A-Za-z0-9]+)$", u, re.I) is not None
+def resolve(u):
+    api = "https://www.tikwm.com/api/?hd=0&url=" + urllib.parse.quote(u, safe="")
+    req = urllib.request.Request(api, headers={"User-Agent": "Mozilla/5.0 MiniOS/0.2.196", "Accept": "application/json"})
+    try:
+        rawj = urllib.request.urlopen(req, timeout=8, context=ssl._create_unverified_context()).read()
+    except Exception:
+        return ""
+    if rawj[:1] == b"<":
+        return ""
+    try:
+        data = json.loads(rawj.decode("utf-8", "replace"))
+    except Exception:
+        return ""
+    if not isinstance(data, dict) or data.get("code") != 0:
+        return ""
+    info = data.get("data") or {}
+    vid = str(info.get("id") or info.get("aweme_id") or "")
+    auth = info.get("author") or {}
+    author = str(auth.get("unique_id") or auth.get("uniqueId") or "") if isinstance(auth, dict) else ""
+    if not re.match(r"^[0-9]+$", vid) or not re.match(r"^[A-Za-z0-9._]+$", author):
+        return ""
+    return "https://www.tiktok.com/@%s/video/%s" % (author, vid)
+u = norm(raw)
+if any(p in bad for p in [p for p in u.lower().split("/") if p]):
+    sys.exit(2)
+got = canon_of(u)
+if not got and short_of(u):
+    got = resolve(u)
+if not got:
+    sys.exit(3)
+sys.stdout.write("TikTok video\t%s\t-\t\t" % got)
+PYEOF
+)
+  rc=$?
+  if [ "$rc" -eq 0 ] && [ -n "$row" ]; then
+    printf '%s\n' "$row"
+    printf '%s\n' "$row" >/tmp/minios-tt-last.txt
+    echo "paste canonical $row" >>"$LOG"
+    exit 0
+  fi
+  echo "paste not a video rc=$rc q=$Q" >>"$LOG"
+  echo not-video >"$REASON"
+  exit 1
+  ;;
+esac
+
+rm -f /tmp/minios-tt-last.txt "$ROWS" "$ROWS.maybe" "$NEXT" /tmp/minios-tt-search.html \
+  /tmp/minios-tt-ddg-blocked
+: >"$ROWS"
+
+if [ -z "$PY" ]; then
+  echo "search needs python" >>"$LOG"
+  echo empty >"$REASON"
+  exit 1
+fi
+
+cat >"$EXPY" <<'PYEOF'
+import base64, html as H, json, re, sys, time, urllib.parse as U
+mode = sys.argv[1]
+
+def unescape_all(s):
+    cur = s or ""
+    for _ in range(3):
+        nxt = H.unescape(cur)
+        if nxt == cur:
+            break
+        cur = nxt
+    return cur
+
+def clip_text(t):
+    raw = t.encode("utf-8")
+    if len(raw) <= 72:
+        return t
+    cut = raw[:72]
+    while cut and (cut[-1] & 0xC0) == 0x80:
+        cut = cut[:-1]
+    return cut.decode("utf-8", "ignore") + "..."
+
+def clean_title(raw, views):
+    t = unescape_all(re.sub(r"<[^>]+>", " ", raw or ""))
+    t = re.sub(r"\s+", " ", t).replace("\t", " ").strip()
+    if not t or t.lower() in ("tiktok", "tiktok video"):
+        t = "TikTok video"
+    if views:
+        t = views + " · " + t
+    return clip_text(t)
+
+def load_rows(path):
+    found, seen = {}, []
+    try:
+        for ln in open(path, "r", errors="replace"):
+            p = ln.rstrip("\n").split("\t")
+            if len(p) >= 2 and p[1]:
+                found[p[1]] = p[0]
+                seen.append(p[1])
+    except OSError:
+        pass
+    return found, seen
+
+watched_ids = set()
+
+def remember_watched(found):
+    import os
+    path = os.environ.get("MINIOS_TT_WATCHED") or ""
+    if not path:
+        return
+    try:
+        fh = open(path, "r", errors="replace")
+    except OSError:
+        return
+    for ln in fh:
+        u = ln.strip()
+        if not u:
+            continue
+        if u not in found:
+            found[u] = "TikTok video"
+        m = re.search(r"/video/([0-9]+)", u)
+        if m:
+            watched_ids.add(m.group(1))
+    fh.close()
+
+def save_rows(path, found, seen):
+    open(path, "w").write("".join("%s\t%s\t-\t\t\n" % (found[u], u) for u in seen))
+
+def add(found, seen, user, vid, title, limit):
+    if len(seen) >= limit:
+        return 0
+    if not re.match(r"^[A-Za-z0-9._]+$", user) or not re.match(r"^[0-9]+$", vid):
+        return 0
+    url = "https://www.tiktok.com/@%s/video/%s" % (user, vid)
+    if vid in watched_ids:
+        return 0
+    if url in found:
+        if found[url] == "TikTok video" and title and title != "TikTok video":
+            found[url] = title
+        return 0
+    found[url] = title or "TikTok video"
+    seen.append(url)
+    return 1
+
+if mode == "web":
+    src, rows_path, limit = sys.argv[2], sys.argv[3], int(sys.argv[4])
+    text = open(src, "r", errors="replace").read()
+    found, seen = load_rows(rows_path)
+    remember_watched(found)
+    before = len(seen)
+    blobs = [text, U.unquote(text)]
+    def b64(s):
+        s = s[2:] if s.startswith("a1") else s
+        s += "=" * (-len(s) % 4)
+        try:
+            return base64.urlsafe_b64decode(s).decode("utf-8", "replace")
+        except Exception:
+            return ""
+    for m in re.finditer(r"[?&;]u=(a1[A-Za-z0-9_\-]+)", text):
+        blobs.append(b64(m.group(1)))
+    for m in re.finditer(r"uddg=([^&\"']+)", text):
+        blobs.append(U.unquote(m.group(1)))
+    pat = re.compile(r"tiktok\.com/@([A-Za-z0-9._]+)/video/(\d+)", re.I)
+    for blob in blobs:
+        for m in pat.finditer(blob or ""):
+            add(found, seen, m.group(1), m.group(2), "TikTok video", limit)
+    save_rows(rows_path, found, seen)
+    maybe = set()
+    try:
+        for ln in open(rows_path + ".maybe", "r", errors="replace"):
+            if ln.strip():
+                maybe.add(ln.strip())
+    except OSError:
+        pass
+    short = re.compile(r"https?://(?:(?:www\.)?tiktok\.com/t/[A-Za-z0-9]+|(?:vm|vt)\.tiktok\.com/[A-Za-z0-9]+)", re.I)
+    for blob in blobs:
+        for m in short.finditer(blob or ""):
+            maybe.add(m.group(0).split("?")[0].rstrip("/"))
+    open(rows_path + ".maybe", "w").write("".join(u + "\n" for u in sorted(maybe)))
+    print("web before", before, "after", len(seen), "maybe", len(maybe))
+elif mode == "resolve":
+    rows_path, maybe_path, limit, deadline = sys.argv[2], sys.argv[3], int(sys.argv[4]), float(sys.argv[5])
+    import json, ssl, urllib.request
+    found, seen = load_rows(rows_path)
+    remember_watched(found)
+    ctx = ssl._create_unverified_context()
+    ua = {"User-Agent": "Mozilla/5.0 MiniOS/0.2.196", "Accept": "application/json"}
+    added = missed = 0
+    stop = False
+    try:
+        cands = [ln.strip() for ln in open(maybe_path, "r", errors="replace") if ln.strip()]
+    except OSError:
+        cands = []
+    for url in cands:
+        if stop or added >= 24 or len(seen) >= limit or time.time() >= deadline:
+            break
+        if not re.search(r"tiktok\.com/t/[A-Za-z0-9]+|(?:vm|vt)\.tiktok\.com/[A-Za-z0-9]+", url, re.I):
+            continue
+        api = "https://www.tikwm.com/api/?hd=0&url=" + U.quote(url, safe="")
+        try:
+            raw = urllib.request.urlopen(urllib.request.Request(api, headers=ua), timeout=6, context=ctx).read()
+        except Exception:
+            missed += 1
+            continue
+        if raw[:1] == b"<" or b"Just a moment" in raw[:400]:
+            print("resolve challenged")
+            stop = True
+            break
+        try:
+            data = json.loads(raw.decode("utf-8", "replace"))
+        except Exception:
+            missed += 1
+            continue
+        if not isinstance(data, dict) or data.get("code") != 0:
+            missed += 1
+            continue
+        info = data.get("data") or {}
+        vid = str(info.get("id") or info.get("aweme_id") or "")
+        auth = info.get("author") or {}
+        author = str(auth.get("unique_id") or auth.get("uniqueId") or "") if isinstance(auth, dict) else ""
+        title = clean_title(info.get("title") or info.get("desc") or "", "")
+        if add(found, seen, author, vid, title, limit):
+            added += 1
+        else:
+            missed += 1
+    save_rows(rows_path, found, seen)
+    print("resolved", added, "missed", missed)
+elif mode == "four":
+    src, rows_path, limit = sys.argv[2], sys.argv[3], int(sys.argv[4])
+    mark = rows_path + ".four"
+    found, seen = load_rows(rows_path)
+    remember_watched(found)
+    before = len(seen)
+    try:
+        data = json.loads(open(src, "r", errors="replace").read())
+    except Exception:
+        open(mark, "w").write("SKIP\n")
+        print("four bad json")
+        sys.exit(0)
+    if not isinstance(data, dict) or data.get("status") != "ok":
+        open(mark, "w").write("SKIP\n")
+        print("four skip", data.get("status") if isinstance(data, dict) else "?")
+        sys.exit(0)
+    pat = re.compile(r"tiktok\.com/@([A-Za-z0-9._]+)/video/([0-9]+)", re.I)
+    added = 0
+    for key in ("video", "web"):
+        block = data.get(key) or []
+        if not isinstance(block, list):
+            continue
+        for item in block:
+            if len(seen) >= limit:
+                break
+            if not isinstance(item, dict):
+                continue
+            m = pat.search(U.unquote(str(item.get("url") or "")))
+            if not m:
+                continue
+            title = re.sub(r"\s*[|\-]\s*TikTok\s*$", "", unescape_all(item.get("title") or ""), flags=re.I)
+            added += add(found, seen, m.group(1), m.group(2), clean_title(title, ""), limit)
+    save_rows(rows_path, found, seen)
+    npt = str(data.get("npt") or "").replace("\n", "").replace("\r", "").replace("\t", "").strip()
+    npt = re.sub(r"[^A-Za-z0-9._~+-]", "", npt)[:180]
+    kind = "OK" if added else "EMPTY"
+    open(mark, "w").write(kind + "\n" + ((npt + "\n") if npt else ""))
+    print("four before", before, "added", added, "after", len(seen), "npt", 1 if npt else 0)
+elif mode == "judge":
+    oe_path, tw_path, row = sys.argv[2], sys.argv[3], sys.argv[4]
+
+    def loadj(path):
+        try:
+            raw = open(path, "rb").read(200000)
+        except OSError:
+            return None
+        if not raw or raw[:1] == b"<" or b"Just a moment" in raw[:500]:
+            return None
+        try:
+            data = json.loads(raw.decode("utf-8", "replace"))
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+
+    oe = loadj(oe_path)
+    tw = loadj(tw_path)
+    parts = (row or "").split("\t")
+    url = parts[1] if len(parts) > 1 else ""
+    if not re.match(r"^https://www\.tiktok\.com/@[A-Za-z0-9._]+/video/[0-9]+$", url):
+        sys.stdout.write("FAIL format\n")
+        sys.exit(0)
+    if not isinstance(oe, dict) or str(oe.get("type") or "") != "video":
+        sys.stdout.write("FAIL oembed\n")
+        sys.exit(0)
+    if not isinstance(tw, dict) or tw.get("code") != 0:
+        sys.stdout.write("FAIL tikwm\n")
+        sys.exit(0)
+    info = tw.get("data") or {}
+    play = ""
+    if isinstance(info, dict):
+        play = info.get("play") or info.get("wmplay") or ""
+    if not play:
+        sys.stdout.write("FAIL noplay\n")
+        sys.exit(0)
+    title = clean_title(oe.get("title") or (parts[0] if parts else ""), "")
+    sys.stdout.write("OK\t%s\t%s\t-\t\t\n" % (title, url))
+else:
+    sys.exit(2)
+PYEOF
+
+rowcount() {
+  if [ -s "$ROWS" ]; then
+    wc -l <"$ROWS" | tr -dc '0-9'
+  else
+    echo 0
+  fi
+}
+
+time_up() {
+  [ $(( $(date +%s) - START )) -ge "$DEADLINE_SECS" ]
+}
+
+status_n() {
+  printf 'STATUS\tSearching TikTok... %s posts so far\n' "$(rowcount)"
+}
+
+enc_form() {
+  "$PY" -c 'import urllib.parse,sys; print(urllib.parse.quote_plus(sys.argv[1]))' "$1" 2>/dev/null || true
+}
+
+UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+TMPF=/tmp/minios-tt-chunk.html
+challenged=0
+
+is_challenge() {
+  [ -s "$1" ] || return 1
+  grep -qiE 'Just a moment|Verifying your browser|anomaly-modal|challenge-form|sorry, you have been blocked' "$1"
+}
+
+fetch_url() {
+  secs="${2:-18}"
+  rm -f "$TMPF" "$TMPF.code"
+  if command -v curl >/dev/null 2>&1; then
+    curl -L --connect-timeout 5 --max-time "$secs" -A "$UA" -c "$CK" -b "$CK" \
+      -H "Accept: text/html,application/json;q=0.9,*/*;q=0.8" \
+      -H "Accept-Language: en-US,en;q=0.9" \
+      -o "$TMPF" -w "%{http_code}" "$1" >"$TMPF.code" 2>>"$LOG" || true
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "$TMPF" --user-agent="$UA" --timeout=18 "$1" >>"$LOG" 2>&1 || true
+    echo 200 >"$TMPF.code"
+  fi
+  code=$(tr -dc '0-9' <"$TMPF.code" 2>/dev/null || true)
+  echo "get code=${code:-0} $1" >>"$LOG"
+  [ "${code:-0}" = "200" ] && [ -s "$TMPF" ]
+}
+
+fetch_post() {
+  rm -f "$TMPF" "$TMPF.code"
+  if command -v curl >/dev/null 2>&1; then
+    curl -L --max-time 18 -A "$UA" -c "$CK" -b "$CK" \
+      -H "Accept: text/html" \
+      -H "Referer: https://html.duckduckgo.com/" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      --data "$2" -o "$TMPF" -w "%{http_code}" "$1" >"$TMPF.code" 2>>"$LOG" || true
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "$TMPF" --user-agent="$UA" --timeout=18 --post-data="$2" "$1" >>"$LOG" 2>&1 || true
+    echo 200 >"$TMPF.code"
+  fi
+  code=$(tr -dc '0-9' <"$TMPF.code" 2>/dev/null || true)
+  echo "post code=${code:-0} $1" >>"$LOG"
+  [ "${code:-0}" = "200" ] && [ -s "$TMPF" ]
+}
+
+# 4get answers JSON. Startpage on the first host has been the long list.
+# An empty but valid answer tries the next host. Brave is not used; it
+# currently returns "Failed to decode JavaScript object".
+FOUR_HOSTS="https://4get.canine.tools https://4get.nadeko.net https://4.nboeck.de https://4get.eloy.ar"
+
+# 4get hands back about 20 links and a token for the next page.
+# Own variables. At most 3 extra pages, and never past TARGET.
+four_more_pages() {
+  four_base="$1"
+  four_qenc="$2"
+  four_scraper="$3"
+  four_page=0
+  while [ "$four_page" -lt 3 ]; do
+    [ "$(rowcount)" -ge "$TARGET" ] && return 0
+    time_up && return 0
+    four_npt=$(sed -n '2p' "$ROWS.four" 2>/dev/null | tr -d '\r\n')
+    [ -n "$four_npt" ] || return 0
+    four_page=$((four_page + 1))
+    four_npt_enc=$(enc_form "$four_npt")
+    [ -n "$four_npt_enc" ] || return 0
+    echo "four-next page=$four_page $four_base" >>"$LOG"
+    if ! fetch_url "$four_base/api/v1/web?s=${four_qenc}&scraper=${four_scraper}&npt=${four_npt_enc}" 8; then
+      echo "four-next http fail" >>"$LOG"
+      return 0
+    fi
+    if is_challenge "$TMPF"; then
+      echo "four-next challenge" >>"$LOG"
+      return 0
+    fi
+    rm -f "$ROWS.four"
+    "$PY" "$EXPY" four "$TMPF" "$ROWS" "$TARGET" >>"$LOG" 2>&1 || true
+    echo "four-next mark=$(head -n 1 "$ROWS.four" 2>/dev/null || true) n=$(rowcount)" >>"$LOG"
+    status_n
+  done
+  return 0
+}
+
+run_four() {
+  label="$1"
+  query="$2"
+  scraper="$3"
+  tried=0
+  for base in $FOUR_HOSTS; do
+    [ "$tried" -ge 3 ] && return 0
+    [ "$(rowcount)" -ge "$TARGET" ] && return 0
+    time_up && return 0
+    tried=$((tried + 1))
+    qenc=$(enc_form "$query")
+    echo "four-get $label $base" >>"$LOG"
+    if ! fetch_url "$base/api/v1/web?s=${qenc}&scraper=${scraper}" 8; then
+      echo "four http fail $base" >>"$LOG"
+      continue
+    fi
+    if is_challenge "$TMPF"; then
+      echo "four challenge $base" >>"$LOG"
+      continue
+    fi
+    rm -f "$ROWS.four"
+    "$PY" "$EXPY" four "$TMPF" "$ROWS" "$TARGET" >>"$LOG" 2>&1 || true
+    mark=$(head -n 1 "$ROWS.four" 2>/dev/null || true)
+    echo "four $label mark=$mark n=$(rowcount)" >>"$LOG"
+    if [ "$mark" = "OK" ]; then
+      status_n
+      four_more_pages "$base" "$qenc" "$scraper"
+      [ "$(rowcount)" -ge "$TARGET" ] && return 0
+    fi
+  done
+  return 0
+}
+
+# Own files and own timer. A row is shown only when TikWM names a video
+# file. Oembed is not asked. The gather clock does not cancel this check.
+confirm_tikwm_file() {
+  confirm_ok=/tmp/minios-tt-confirm.ok
+  confirm_json=/tmp/minios-tt-confirm.json
+  confirm_py=/tmp/minios-tt-confirm.py
+  confirm_start=$(date +%s)
+  confirm_tries=0
+  confirm_kept=0
+  confirm_fail=0
+  confirm_hide=0
+  : >"$confirm_ok"
+  cat >"$confirm_py" <<'CONFIRM_PY'
+import json, re, sys
+path, row = sys.argv[1], sys.argv[2]
+parts = (row or "").split("\t")
+url = parts[1] if len(parts) > 1 else ""
+if not re.match(r"^https://www\.tiktok\.com/@[A-Za-z0-9._]+/video/[0-9]+$", url):
+    sys.stdout.write("FAIL format\n")
+    sys.exit(0)
+try:
+    raw = open(path, "rb").read(200000)
+except OSError:
+    sys.stdout.write("FAIL read\n")
+    sys.exit(0)
+if (not raw) or raw.lstrip()[:1] == b"<" or (b"Just a moment" in raw[:500]):
+    sys.stdout.write("FAIL page\n")
+    sys.exit(0)
+try:
+    data = json.loads(raw.decode("utf-8", "replace"))
+except Exception:
+    sys.stdout.write("FAIL json\n")
+    sys.exit(0)
+if not isinstance(data, dict) or data.get("code") != 0:
+    msg = str((data.get("msg") if isinstance(data, dict) else "") or "").lower()
+    if "limit" in msg or "too many" in msg or "rate" in msg:
+        sys.stdout.write("WAIT\n")
+        sys.exit(0)
+    sys.stdout.write("FAIL tikwm\n")
+    sys.exit(0)
+info = data.get("data") or {}
+if not isinstance(info, dict):
+    sys.stdout.write("FAIL nodata\n")
+    sys.exit(0)
+media = info.get("play") or info.get("wmplay") or ""
+if not isinstance(media, str) or not media.startswith("http"):
+    sys.stdout.write("FAIL noplay\n")
+    sys.exit(0)
+title = info.get("title") or info.get("desc") or (parts[0] if parts else "") or "TikTok video"
+title = re.sub(r"\s+", " ", str(title)).replace("\t", " ").strip() or "TikTok video"
+rawt = title.encode("utf-8")
+if len(rawt) > 72:
+    cut = rawt[:72]
+    while cut and (cut[-1] & 0xC0) == 0x80:
+        cut = cut[:-1]
+    title = cut.decode("utf-8", "ignore") + "..."
+sys.stdout.write("OK\t%s\t%s\t-\t\t\n" % (title, url))
+CONFIRM_PY
+  printf 'STATUS\tChecking which videos can play...\n'
+  echo "confirm_tikwm_file start rows=$(rowcount)" >>"$LOG"
+  while IFS= read -r confirm_line || [ -n "$confirm_line" ]; do
+    [ $(( $(date +%s) - confirm_start )) -ge "$CONFIRM_SECS" ] && break
+    [ "$confirm_tries" -ge "$CONFIRM_TRIES" ] && break
+    [ "$confirm_kept" -ge "$CONFIRM_KEEP" ] && break
+    confirm_url=$(printf '%s\n' "$confirm_line" | cut -f2 | tr -d '\r')
+    case "$confirm_url" in
+      https://www.tiktok.com/@*/video/[0-9]*) ;;
+      *) continue ;;
+    esac
+    confirm_tries=$((confirm_tries + 1))
+    confirm_enc=$(enc_form "$confirm_url")
+    [ -n "$confirm_enc" ] || continue
+    confirm_attempt=0
+    confirm_tag=""
+    while [ "$confirm_attempt" -lt 3 ]; do
+      confirm_attempt=$((confirm_attempt + 1))
+      # TikWM's free check allows about one lookup a second.
+      "$PY" -c 'import time; time.sleep(1.15)'
+      if ! fetch_url "https://www.tikwm.com/api/?hd=0&url=${confirm_enc}" 6; then
+        confirm_tag="FAIL http"
+        echo "confirm http attempt=$confirm_attempt $confirm_url" >>"$LOG"
+        continue
+      fi
+      cp -f "$TMPF" "$confirm_json"
+      confirm_verdict=$("$PY" "$confirm_py" "$confirm_json" "$confirm_line" 2>>"$LOG" || true)
+      confirm_tag=$(printf '%s' "$confirm_verdict" | tr -d '\r\n' | cut -f1)
+      if [ "$confirm_tag" = "WAIT" ]; then
+        echo "confirm wait attempt=$confirm_attempt $confirm_url" >>"$LOG"
+        continue
+      fi
+      break
+    done
+    case "$confirm_tag" in
+      OK)
+        confirm_out=$(printf '%s' "$confirm_verdict" | tr -d '\r\n' | cut -f2-)
+        printf '%s\n' "$confirm_out" >>"$confirm_ok"
+        confirm_kept=$((confirm_kept + 1))
+        printf 'STATUS\tChecking which videos can play... %s ready\n' "$confirm_kept"
+        ;;
+      "FAIL page")
+        confirm_hide=$((confirm_hide + 1))
+        confirm_fail=$((confirm_fail + 1))
+        ;;
+      *)
+        confirm_fail=$((confirm_fail + 1))
+        ;;
+    esac
+    echo "confirm try=$confirm_tries kept=$confirm_kept tag=$confirm_tag $confirm_url" >>"$LOG"
+  done <"$ROWS"
+  echo "confirm done tries=$confirm_tries kept=$confirm_kept fails=$confirm_fail hide=$confirm_hide" >>"$LOG"
+  if [ "$confirm_kept" -ge 1 ]; then
+    mv -f "$confirm_ok" "$ROWS"
+  else
+    : >"$ROWS"
+    rm -f "$confirm_ok"
+    if [ "$confirm_hide" -ge 3 ]; then
+      challenged=1
+    fi
+  fi
+  rm -f "$confirm_json" "$confirm_py"
+}
+
+keep_live() {
+  : >"$ROWS.ok"
+  tries=0
+  kept=0
+  fails=0
+  printf 'STATUS\tChecking which videos are still online...\n'
+  while IFS= read -r line || [ -n "$line" ]; do
+    time_up && break
+    [ "$tries" -ge "$LIVE_TRIES" ] && break
+    [ "$kept" -ge "$LIVE_KEEP" ] && break
+    url=${line#*	}
+    url=${url%%	*}
+    case "$url" in
+      https://www.tiktok.com/@*/video/[0-9]*) ;;
+      *) continue ;;
+    esac
+    tries=$((tries + 1))
+    enc=$(enc_form "$url")
+    [ -n "$enc" ] || continue
+    if ! fetch_url "https://www.tiktok.com/oembed?url=${enc}" 6; then
+      fails=$((fails + 1))
+      echo "live oembed-http $url" >>"$LOG"
+      continue
+    fi
+    cp -f "$TMPF" "$TMPF.oe"
+    if ! fetch_url "https://www.tikwm.com/api/?hd=0&url=${enc}" 6; then
+      fails=$((fails + 1))
+      echo "live tikwm-http $url" >>"$LOG"
+      continue
+    fi
+    cp -f "$TMPF" "$TMPF.tw"
+    verdict=$("$PY" "$EXPY" judge "$TMPF.oe" "$TMPF.tw" "$line" 2>>"$LOG" || true)
+    case "$verdict" in
+      OK*) 
+        printf '%s\n' "${verdict#OK	}" >>"$ROWS.ok"
+        kept=$((kept + 1))
+        printf 'STATUS\tChecking which videos are still online... %s ready\n' "$kept"
+        ;;
+      *)
+        fails=$((fails + 1))
+        ;;
+    esac
+    echo "live try=$tries kept=$kept ${verdict%%	*} $url" >>"$LOG"
+  done <"$ROWS"
+  mv -f "$ROWS.ok" "$ROWS"
+  echo "live done tries=$tries kept=$kept fails=$fails" >>"$LOG"
+  if [ "$kept" -lt 1 ] && [ "$fails" -ge 3 ]; then
+    challenged=1
+  fi
+}
+
+# Lines the search window shows while this script is still running.
+# An external printf flushes each line. A shell printf can sit in a buffer.
+tt_pick_budget() {
+  case "$1" in
+    15|30|45|60) TT_BUDGET=$1 ;;
+    *) TT_BUDGET=30 ;;
+  esac
+  echo "search budget=$TT_BUDGET" >>"$LOG"
+}
+
+# Same words again keep the saved links. A different word starts over.
+tt_same_search() {
+  if [ -n "${MINIOS_TT_CONTINUE:-}" ]; then
+    return 0
+  fi
+  if [ -n "${MINIOS_TT_WATCHED:-}" ] && [ -s "$MINIOS_TT_WATCHED" ]; then
+    return 0
+  fi
+  return 1
+}
+
+# The desktop language is lang= on the boot line. English is the start.
+tt_note_lang() {
+  tt_lang=""
+  if [ -r /proc/cmdline ]; then
+    tt_lang=$(sed -n 's/.*lang=\([A-Za-z][A-Za-z]*\).*/\1/p' /proc/cmdline | head -1)
+  fi
+  if [ -z "$tt_lang" ]; then
+    tt_lang=${LANG:-en}
+  fi
+  tt_lang=${tt_lang%%_*}
+  tt_lang=${tt_lang%%.*}
+  case "$tt_lang" in
+    C|POSIX|c|posix|"") tt_lang=en ;;
+  esac
+  export MINIOS_LANG="$tt_lang"
+  echo "search lang=$MINIOS_LANG" >>"$LOG"
+}
+
+tt_budget_up() {
+  tt_budget_used=$(( $(date +%s) - START ))
+  [ "$tt_budget_used" -ge "$TT_BUDGET" ]
+}
+
+tt_show_line() {
+  tt_show_text="$1"
+  if [ -x /bin/printf ]; then
+    /bin/printf '%s\n' "$tt_show_text"
+  elif [ -x /usr/bin/printf ]; then
+    /usr/bin/printf '%s\n' "$tt_show_text"
+  else
+    printf '%s\n' "$tt_show_text"
+  fi
+}
+
+tt_left_secs() {
+  tt_need=$((FAST_SHOW - tt_kept))
+  tt_room=$((FAST_TRIES - tt_tries))
+  if [ "$tt_need" -lt 1 ]; then
+    tt_need=1
+  fi
+  if [ "$tt_room" -lt 1 ]; then
+    tt_room=1
+  fi
+  if [ "$tt_room" -lt "$tt_need" ]; then
+    tt_need=$tt_room
+  fi
+  tt_left_out=$((tt_need * 2))
+  if [ "$tt_left_out" -lt 1 ]; then
+    tt_left_out=1
+  fi
+}
+
+tt_say_site() {
+  tt_site="$1"
+  tt_secs="$2"
+  tt_show_line "STATUS${TT_TAB}Searching ${tt_site}. About ${tt_secs} seconds."
+}
+
+tt_say_check() {
+  tt_which="$1"
+  tt_left_secs
+  tt_show_line "STATUS${TT_TAB}Checking video ${tt_which}. About ${tt_left_out} seconds."
+}
+
+tt_say_ready() {
+  tt_ready="$1"
+  tt_left_secs
+  if [ "$tt_ready" -ge "$FAST_SHOW" ]; then
+    tt_show_line "STATUS${TT_TAB}${tt_ready} videos ready."
+  elif [ "$tt_ready" -eq 1 ]; then
+    tt_show_line "STATUS${TT_TAB}1 video ready. About ${tt_left_out} seconds left."
+  else
+    tt_show_line "STATUS${TT_TAB}${tt_ready} videos ready. About ${tt_left_out} seconds left."
+  fi
+}
+
+# Remember the next page so More videos can continue after this script exits.
+tt_save_page_mark() {
+  tt_npt_now=$(sed -n '2p' "$ROWS.four" 2>/dev/null | tr -d '\r\n')
+  [ -n "$tt_page_base" ] || return 0
+  [ -n "$tt_npt_now" ] || return 0
+  {
+    printf '%s\n' "$tt_page_base"
+    printf '%s\n' "$tt_page_qenc"
+    printf '%s\n' "$tt_page_scraper"
+    printf '%s\n' "$tt_npt_now"
+  } >/tmp/minios-tt-page.txt
+  echo "page mark saved" >>"$LOG"
+}
+
+tt_load_page_mark() {
+  [ -s /tmp/minios-tt-page.txt ] || return 1
+  tt_page_base=$(sed -n '1p' /tmp/minios-tt-page.txt | tr -d '\r')
+  tt_page_qenc=$(sed -n '2p' /tmp/minios-tt-page.txt | tr -d '\r')
+  tt_page_scraper=$(sed -n '3p' /tmp/minios-tt-page.txt | tr -d '\r')
+  tt_npt_saved=$(sed -n '4p' /tmp/minios-tt-page.txt | tr -d '\r')
+  [ -n "$tt_page_base" ] || return 1
+  [ -n "$tt_npt_saved" ] || return 1
+  printf 'OK\n%s\n' "$tt_npt_saved" >"$ROWS.four"
+  return 0
+}
+
+tt_drop_shown_rows() {
+  [ -s "$ROWS" ] || return 0
+  : >/tmp/minios-tt-rows.keep
+  while IFS= read -r tt_pl || [ -n "$tt_pl" ]; do
+    tt_pu=$(printf '%s\n' "$tt_pl" | cut -f2 | tr -d '\r')
+    tt_pv=$(printf '%s\n' "$tt_pu" | sed -n 's|.*/video/\([0-9][0-9]*\).*|\1|p')
+    [ -n "$tt_pv" ] || continue
+    if [ -f "$SHOWN" ] && grep -F "/video/$tt_pv" "$SHOWN" >/dev/null 2>&1; then
+      continue
+    fi
+    if [ -n "${MINIOS_TT_WATCHED:-}" ] && [ -f "$MINIOS_TT_WATCHED" ] && \
+       grep -F "/video/$tt_pv" "$MINIOS_TT_WATCHED" >/dev/null 2>&1; then
+      continue
+    fi
+    printf '%s\n' "$tt_pl" >>/tmp/minios-tt-rows.keep
+  done <"$ROWS"
+  mv -f /tmp/minios-tt-rows.keep "$ROWS"
+}
+
+# One new page, then the caller checks it. A second site runs only when
+# that page has no new videos. The user sees a result without waiting
+# for every site.
+tt_more_next_step() {
+  : >"$ROWS"
+  if tt_load_page_mark && ! tt_budget_up; then
+    tt_say_site "the next page" "8"
+    tt_pull_next_page
+    tt_drop_shown_rows
+    echo "more next page n=$(rowcount)" >>"$LOG"
+    [ "$(rowcount)" -gt 0 ] && return 0
+  fi
+  if tt_budget_up; then
+    return 0
+  fi
+  tt_site_n=0
+  if [ -f /tmp/minios-tt-moresite.txt ]; then
+    tt_site_n=$(tr -dc '0-9' </tmp/minios-tt-moresite.txt)
+  fi
+  [ -n "$tt_site_n" ] || tt_site_n=0
+  tt_b=$(enc_form "$Q site:tiktok.com")
+  case "$tt_site_n" in
+    1)
+      tt_say_site "DuckDuckGo" "8"
+      tt_pull_ddg "$tt_b"
+      echo 2 >/tmp/minios-tt-moresite.txt
+      ;;
+    2)
+      tt_say_site "Yahoo" "8"
+      tt_pull_web "https://search.yahoo.com/search?p=${tt_b}&n=20&lang=${MINIOS_LANG:-en}"
+      echo 0 >/tmp/minios-tt-moresite.txt
+      ;;
+    *)
+      tt_say_site "Bing" "8"
+      tt_pull_web "https://www.bing.com/search?q=${tt_b}&count=30&setlang=${MINIOS_LANG:-en}"
+      echo 1 >/tmp/minios-tt-moresite.txt
+      ;;
+  esac
+  tt_drop_shown_rows
+  echo "more one site n=$(rowcount)" >>"$LOG"
+  return 0
+}
+
+tt_pull_startpage() {
+  tt_qenc="$1"
+  tt_scraper="$2"
+  tt_hosts_tried=0
+  for tt_base in $FOUR_HOSTS; do
+    [ "$tt_hosts_tried" -ge 2 ] && return 0
+    tt_hosts_tried=$((tt_hosts_tried + 1))
+    echo "fast-get $tt_base scraper=$tt_scraper" >>"$LOG"
+    if ! fetch_url "$tt_base/api/v1/web?s=${tt_qenc}&scraper=${tt_scraper}" 8; then
+      echo "fast http fail $tt_base" >>"$LOG"
+      continue
+    fi
+    if is_challenge "$TMPF"; then
+      echo "fast challenge $tt_base" >>"$LOG"
+      continue
+    fi
+    rm -f "$ROWS.four"
+    "$PY" "$EXPY" four "$TMPF" "$ROWS" "$FAST_CAP" >>"$LOG" 2>&1 || true
+    tt_mark=$(head -n 1 "$ROWS.four" 2>/dev/null || true)
+    echo "fast mark=$tt_mark n=$(rowcount) $tt_base" >>"$LOG"
+    if [ "$tt_mark" = "OK" ]; then
+      tt_page_base=$tt_base
+      tt_page_qenc=$tt_qenc
+      tt_page_scraper=$tt_scraper
+      tt_save_page_mark
+      return 0
+    fi
+  done
+  return 0
+}
+
+tt_pull_more_unseen() {
+  tt_more_i=0
+  tt_more_before=0
+  [ -n "${MINIOS_TT_WATCHED:-}" ] || return 0
+  [ -s "$MINIOS_TT_WATCHED" ] || return 0
+  while [ "$tt_more_i" -lt 3 ]; do
+    tt_budget_up && return 0
+    [ "$(rowcount)" -ge 16 ] && return 0
+    tt_more_before=$(rowcount)
+    tt_pull_next_page
+    tt_more_i=$((tt_more_i + 1))
+    echo "more unseen pass=$tt_more_i n=$(rowcount)" >>"$LOG"
+    [ "$(rowcount)" = "$tt_more_before" ] && return 0
+  done
+}
+
+tt_pull_next_page() {
+  tt_npt=$(sed -n '2p' "$ROWS.four" 2>/dev/null | tr -d '\r\n')
+  [ -n "$tt_npt" ] || return 0
+  [ -n "$tt_page_base" ] || return 0
+  tt_npt_enc=$(enc_form "$tt_npt")
+  [ -n "$tt_npt_enc" ] || return 0
+  echo "fast-next $tt_page_base" >>"$LOG"
+  if ! fetch_url "$tt_page_base/api/v1/web?s=${tt_page_qenc}&scraper=${tt_page_scraper}&npt=${tt_npt_enc}" 8; then
+    echo "fast-next http fail" >>"$LOG"
+    return 0
+  fi
+  if is_challenge "$TMPF"; then
+    echo "fast-next challenge" >>"$LOG"
+    return 0
+  fi
+  rm -f "$ROWS.four"
+  "$PY" "$EXPY" four "$TMPF" "$ROWS" "$FAST_CAP" >>"$LOG" 2>&1 || true
+  tt_save_page_mark
+  echo "fast-next n=$(rowcount)" >>"$LOG"
+  return 0
+}
+
+tt_pull_web() {
+  tt_url="$1"
+  if fetch_url "$tt_url" 12; then
+    if is_challenge "$TMPF"; then
+      challenged=1
+      echo "fast web challenge $tt_url" >>"$LOG"
+    else
+      "$PY" "$EXPY" web "$TMPF" "$ROWS" "$FAST_CAP" >>"$LOG" 2>&1 || true
+    fi
+  fi
+  echo "fast web n=$(rowcount) $tt_url" >>"$LOG"
+}
+
+tt_pull_ddg() {
+  tt_qenc="$1"
+  tt_kl=us-en
+  case "${MINIOS_LANG:-en}" in
+    ja) tt_kl=jp-jp ;;
+    ko) tt_kl=kr-kr ;;
+    es) tt_kl=es-es ;;
+    fr) tt_kl=fr-fr ;;
+    de) tt_kl=de-de ;;
+    pt) tt_kl=br-pt ;;
+    en) tt_kl=us-en ;;
+    *) tt_kl=wt-wt ;;
+  esac
+  if fetch_post "https://html.duckduckgo.com/html/" "q=${tt_qenc}&b=&s=0&kl=${tt_kl}"; then
+    if is_challenge "$TMPF"; then
+      challenged=1
+      echo "fast ddg challenge" >>"$LOG"
+    else
+      "$PY" "$EXPY" web "$TMPF" "$ROWS" "$FAST_CAP" >>"$LOG" 2>&1 || true
+    fi
+  else
+    challenged=1
+    echo "fast ddg http fail" >>"$LOG"
+  fi
+  echo "fast ddg n=$(rowcount)" >>"$LOG"
+}
+
+# Own files. Reads the start of the named video and keeps the row when
+# that start is a complete H.264 picture with AAC sound. Returns 2 when
+# the file host does not allow a short read, so the row can still be shown.
+tt_prefix_can_play() {
+  tt_pre_json="$1"
+  tt_pre_hdr=/tmp/minios-tt-prefix.hdr
+  tt_pre_body=/tmp/minios-tt-prefix.mp4
+  tt_pre_http=/tmp/minios-tt-prefix.http
+  rm -f "$tt_pre_hdr" "$tt_pre_body" "$tt_pre_http"
+  tt_pre_url=$("$PY" - "$tt_pre_json" 2>>"$LOG" <<'PY'
+import json, sys
+try:
+    data = json.loads(open(sys.argv[1], "rb").read().decode("utf-8", "replace"))
+except Exception:
+    sys.exit(1)
+info = data.get("data") if isinstance(data, dict) else None
+if not isinstance(info, dict):
+    sys.exit(1)
+media = info.get("play") or info.get("wmplay") or ""
+if not isinstance(media, str) or not media.startswith("http"):
+    sys.exit(1)
+sys.stdout.write(media)
+PY
+  ) || return 1
+  [ -n "$tt_pre_url" ] || return 1
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "tt prefix no curl" >>"$LOG"
+    return 2
+  fi
+  tt_pre_code=$(curl -L --range 0-127 --connect-timeout 5 --max-time 20 -A "$UA" \
+    -o "$tt_pre_hdr" -w "%{http_code}" "$tt_pre_url" 2>>"$LOG" || true)
+  tt_pre_code=$(printf '%s' "$tt_pre_code" | tr -dc '0-9')
+  tt_pre_hsz=$(wc -c < "$tt_pre_hdr" 2>/dev/null | tr -dc '0-9')
+  echo "tt prefix head code=${tt_pre_code:-0} size=${tt_pre_hsz:-0}" >>"$LOG"
+  case "$tt_pre_code" in
+    200|206) ;;
+    *) rm -f "$tt_pre_hdr"; return 2 ;;
+  esac
+  if [ "${tt_pre_hsz:-0}" -gt 128 ]; then
+    echo "tt prefix head ignored range" >>"$LOG"
+    rm -f "$tt_pre_hdr"
+    return 2
+  fi
+  tt_pre_need=$("$PY" - "$tt_pre_hdr" 2>>"$LOG" <<'PY'
+import sys
+b = open(sys.argv[1], "rb").read()
+if len(b) < 16 or b[4:8] != b"ftyp":
+    sys.exit(1)
+size = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
+if size < 16 or size + 8 > len(b):
+    sys.exit(2)
+off = size
+msize = (b[off] << 24) | (b[off + 1] << 16) | (b[off + 2] << 8) | b[off + 3]
+kind = b[off + 4:off + 8]
+if kind != b"moov":
+    sys.exit(2)
+if msize < 16 or msize > 2000000:
+    sys.exit(1)
+sys.stdout.write("%d" % (off + msize))
+PY
+  )
+  tt_pre_rc=$?
+  if [ "$tt_pre_rc" -eq 2 ]; then
+    echo "tt prefix moov not at start" >>"$LOG"
+    rm -f "$tt_pre_hdr"
+    return 2
+  fi
+  if [ "$tt_pre_rc" -ne 0 ] || [ -z "$tt_pre_need" ]; then
+    echo "tt prefix header refused" >>"$LOG"
+    rm -f "$tt_pre_hdr"
+    return 1
+  fi
+  tt_pre_last=$((tt_pre_need - 1))
+  tt_pre_code=$(curl -L --range "0-${tt_pre_last}" --connect-timeout 5 --max-time 25 -A "$UA" \
+    -D "$tt_pre_http" -o "$tt_pre_body" -w "%{http_code}" "$tt_pre_url" 2>>"$LOG" || true)
+  tt_pre_code=$(printf '%s' "$tt_pre_code" | tr -dc '0-9')
+  tt_pre_got=$(wc -c < "$tt_pre_body" 2>/dev/null | tr -dc '0-9')
+  echo "tt prefix body code=${tt_pre_code:-0} got=${tt_pre_got:-0} need=$tt_pre_need" >>"$LOG"
+  case "$tt_pre_code" in
+    200|206) ;;
+    *) rm -f "$tt_pre_hdr" "$tt_pre_body" "$tt_pre_http"; return 2 ;;
+  esac
+  if [ "${tt_pre_got:-0}" -ne "$tt_pre_need" ]; then
+    echo "tt prefix length mismatch" >>"$LOG"
+    rm -f "$tt_pre_hdr" "$tt_pre_body" "$tt_pre_http"
+    return 2
+  fi
+  tt_pre_total=$(tr -d '\r' < "$tt_pre_http" 2>/dev/null | sed -n 's/.*bytes [0-9][0-9]*-[0-9][0-9]*\/\([0-9][0-9]*\).*/\1/p' | head -1 | tr -dc '0-9')
+  if [ -n "$tt_pre_total" ] && [ "$tt_pre_total" -lt 8000 ]; then
+    echo "tt prefix file small total=$tt_pre_total" >>"$LOG"
+    rm -f "$tt_pre_hdr" "$tt_pre_body" "$tt_pre_http"
+    return 1
+  fi
+  "$PY" - "$tt_pre_body" >>"$LOG" 2>&1 <<'PY'
+import sys
+path = sys.argv[1]
+
+def be32(b):
+    return (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
+
+f = open(path, "rb")
+f.seek(0, 2)
+end = f.tell()
+f.seek(0)
+head = f.read(32)
+if head.lstrip()[:1] in (b"<", b"{"):
+    sys.stderr.write("tt-prefix-check page\n")
+    sys.exit(1)
+if len(head) < 8 or head[4:8] != b"ftyp":
+    sys.stderr.write("tt-prefix-check no-ftyp\n")
+    sys.exit(1)
+pos = 0
+saw_moov = 0
+codecs = []
+while pos + 8 <= end:
+    f.seek(pos)
+    hdr = f.read(8)
+    if len(hdr) < 8:
+        sys.stderr.write("tt-prefix-check short\n")
+        sys.exit(1)
+    size = be32(hdr[:4])
+    kind = hdr[4:8]
+    header = 8
+    if size == 1:
+        ext = f.read(8)
+        if len(ext) < 8:
+            sys.stderr.write("tt-prefix-check short\n")
+            sys.exit(1)
+        size = be32(ext[:4]) * 4294967296 + be32(ext[4:8])
+        header = 16
+    elif size == 0:
+        size = end - pos
+    if size < header:
+        sys.stderr.write("tt-prefix-check bad-size\n")
+        sys.exit(1)
+    box_end = pos + size
+    if box_end > end:
+        sys.stderr.write("tt-prefix-check cut\n")
+        sys.exit(1)
+    if kind == b"moov":
+        saw_moov = 1
+        if size > 8 * 1024 * 1024:
+            sys.stderr.write("tt-prefix-check moov-big\n")
+            sys.exit(1)
+        f.seek(pos + header)
+        blob = f.read(size - header)
+        for tag in (b"avc1", b"avc3", b"hvc1", b"hev1", b"dvh1", b"av01", b"mp4a"):
+            if tag in blob and tag not in codecs:
+                codecs.append(tag)
+    pos = box_end
+f.close()
+if not saw_moov:
+    sys.stderr.write("tt-prefix-check no-moov\n")
+    sys.exit(1)
+has_h264 = (b"avc1" in codecs) or (b"avc3" in codecs)
+has_aac = b"mp4a" in codecs
+bad = [t for t in (b"hvc1", b"hev1", b"dvh1", b"av01") if t in codecs]
+if (not has_h264) or (not has_aac) or bad:
+    sys.stderr.write("tt-prefix-check codec\n")
+    sys.exit(1)
+sys.stderr.write("tt-prefix-check ok\n")
+sys.exit(0)
+PY
+  tt_pre_rc=$?
+  rm -f "$tt_pre_hdr" "$tt_pre_body" "$tt_pre_http"
+  if [ "$tt_pre_rc" -ne 0 ]; then
+    echo "tt prefix file will not play" >>"$LOG"
+    return 1
+  fi
+  return 0
+}
+
+# The search row already has a title. If that title is another language,
+# the one-second check is not used. A blank or placeholder title is still checked.
+tt_title_is_other_lang() {
+  tt_head=$(printf '%s\n' "$1" | cut -f1 | tr -d '\r')
+  case "$tt_head" in
+    ""|"TikTok video"|"TikTok") return 1 ;;
+  esac
+  [ -n "$PY" ] || return 1
+  if "$PY" -c '
+import re, sys
+text, want = sys.argv[1], (sys.argv[2] or "en").split(".")[0].split("_")[0].lower()
+if want in ("c", "posix", ""):
+    want = "en"
+plain = acc = cjk = kana = hang = arab = cyr = thai = deva = 0
+for ch in text or "":
+    o = ord(ch)
+    if ch.isalpha() and o < 128:
+        plain += 1
+    elif 0x00C0 <= o <= 0x024F and ch.isalpha():
+        acc += 1
+    elif 0x0400 <= o <= 0x04FF:
+        cyr += 1
+    elif 0x0600 <= o <= 0x06FF or 0x0750 <= o <= 0x077F:
+        arab += 1
+    elif 0x0900 <= o <= 0x097F:
+        deva += 1
+    elif 0x0E00 <= o <= 0x0E7F:
+        thai += 1
+    elif 0x3040 <= o <= 0x30FF:
+        kana += 1
+    elif 0xAC00 <= o <= 0xD7AF:
+        hang += 1
+    elif 0x4E00 <= o <= 0x9FFF:
+        cjk += 1
+other = cjk + kana + hang + arab + cyr + thai + deva
+if plain + acc + other < 2:
+    sys.exit(1)
+ok = True
+if want == "en":
+    ok = other <= plain and not (acc >= 2 and acc * 3 >= plain)
+    if ok:
+        marks = set("el la los las de del que en una por con su se al es esta anos años despues después nadie porque como yo le les des une est dans pour qui der die das und ein eine nicht von zu nao não para voce você os em".split())
+        hit = set(w for w in re.findall(r"[A-Za-zÀ-ÿ]+", (text or "").lower()) if w in marks)
+        if len(hit) >= 2:
+            ok = False
+elif want == "ja":
+    ok = (kana + cjk) >= plain and hang <= kana
+elif want == "zh":
+    ok = cjk >= plain and hang == 0
+elif want == "ko":
+    ok = hang >= plain
+elif want == "ar":
+    ok = arab >= plain
+elif want == "ru":
+    ok = cyr >= plain
+elif want == "th":
+    ok = thai >= plain
+elif want == "hi":
+    ok = deva >= plain
+else:
+    ok = other <= plain
+sys.exit(0 if not ok else 1)
+' "$tt_head" "${MINIOS_LANG:-en}" >/dev/null 2>>"$LOG"; then
+    return 0
+  fi
+  return 1
+}
+
+tt_confirm_show() {
+  tt_ok=/tmp/minios-tt-fast.ok
+  tt_json=/tmp/minios-tt-fast.json
+  tt_py=/tmp/minios-tt-fast.py
+  tt_clock=$(date +%s)
+  tt_tries=0
+  tt_kept=0
+  tt_fail=0
+  tt_hide=0
+  : >"$tt_ok"
+  cat >"$tt_py" <<'TTFAST'
+import json, re, sys
+path, row = sys.argv[1], sys.argv[2]
+parts = (row or "").split("\t")
+url = parts[1] if len(parts) > 1 else ""
+if not re.match(r"^https://www\.tiktok\.com/@[A-Za-z0-9._]+/video/[0-9]+$", url):
+    sys.stdout.write("FAIL format\n")
+    sys.exit(0)
+try:
+    raw = open(path, "rb").read(200000)
+except OSError:
+    sys.stdout.write("FAIL read\n")
+    sys.exit(0)
+if (not raw) or raw.lstrip()[:1] == b"<" or (b"Just a moment" in raw[:500]):
+    sys.stdout.write("FAIL page\n")
+    sys.exit(0)
+try:
+    data = json.loads(raw.decode("utf-8", "replace"))
+except Exception:
+    sys.stdout.write("FAIL json\n")
+    sys.exit(0)
+if not isinstance(data, dict) or data.get("code") != 0:
+    msg = str((data.get("msg") if isinstance(data, dict) else "") or "").lower()
+    if "limit" in msg or "too many" in msg or "rate" in msg:
+        sys.stdout.write("WAIT\n")
+        sys.exit(0)
+    sys.stdout.write("FAIL tikwm\n")
+    sys.exit(0)
+info = data.get("data") or {}
+if not isinstance(info, dict):
+    sys.stdout.write("FAIL nodata\n")
+    sys.exit(0)
+media = info.get("play") or info.get("wmplay") or ""
+if not isinstance(media, str) or not media.startswith("http"):
+    sys.stdout.write("FAIL noplay\n")
+    sys.exit(0)
+title = info.get("title") or info.get("desc") or (parts[0] if parts else "") or "TikTok video"
+desc = info.get("desc") or ""
+def tt_want_lang():
+    import os
+    raw = (os.environ.get("MINIOS_LANG") or "en").split(".")[0].split("_")[0].lower()
+    if raw in ("c", "posix", ""):
+        return "en"
+    return raw
+def tt_lang_ok(text, want):
+    plain = acc = cjk = kana = hang = arab = cyr = thai = deva = 0
+    for ch in text or "":
+        o = ord(ch)
+        if ch.isalpha() and o < 128:
+            plain += 1
+        elif 0x00C0 <= o <= 0x024F and ch.isalpha():
+            acc += 1
+        elif 0x0400 <= o <= 0x04FF:
+            cyr += 1
+        elif 0x0600 <= o <= 0x06FF or 0x0750 <= o <= 0x077F:
+            arab += 1
+        elif 0x0900 <= o <= 0x097F:
+            deva += 1
+        elif 0x0E00 <= o <= 0x0E7F:
+            thai += 1
+        elif 0x3040 <= o <= 0x30FF:
+            kana += 1
+        elif 0xAC00 <= o <= 0xD7AF:
+            hang += 1
+        elif 0x4E00 <= o <= 0x9FFF:
+            cjk += 1
+    other = cjk + kana + hang + arab + cyr + thai + deva
+    if plain + acc + other < 2:
+        return True
+    if want == "en":
+        if other > plain:
+            return False
+        if acc >= 2 and acc * 3 >= plain:
+            return False
+        marks = set("el la los las de del que en una por con su se al es esta anos años despues después nadie porque como yo le les des une est dans pour qui der die das und ein eine nicht von zu nao não para voce você os em".split())
+        hit = set()
+        for word in re.findall(r"[A-Za-zÀ-ÿ]+", (text or "").lower()):
+            if word in marks:
+                hit.add(word)
+        if len(hit) >= 2:
+            return False
+        return True
+    if want == "ja":
+        return (kana + cjk) >= plain and hang <= kana
+    if want == "zh":
+        return cjk >= plain and hang == 0
+    if want == "ko":
+        return hang >= plain
+    if want == "ar":
+        return arab >= plain
+    if want == "ru":
+        return cyr >= plain
+    if want == "th":
+        return thai >= plain
+    if want == "hi":
+        return deva >= plain
+    return other <= plain
+if not tt_lang_ok(str(title) + " " + str(desc), tt_want_lang()):
+    sys.stdout.write("FAIL lang\n")
+    sys.exit(0)
+title = re.sub(r"\s+", " ", str(title)).replace("\t", " ").strip() or "TikTok video"
+rawt = title.encode("utf-8")
+if len(rawt) > 72:
+    cut = rawt[:72]
+    while cut and (cut[-1] & 0xC0) == 0x80:
+        cut = cut[:-1]
+    title = cut.decode("utf-8", "ignore") + "..."
+sys.stdout.write("OK\t%s\t%s\t-\t\t\n" % (title, url))
+TTFAST
+  tt_left_secs
+  tt_show_line "STATUS${TT_TAB}Checking which videos can play. About ${tt_left_out} seconds."
+  echo "tt_confirm_show start rows=$(rowcount)" >>"$LOG"
+  while IFS= read -r tt_line || [ -n "$tt_line" ]; do
+    if tt_budget_up && [ "$tt_tries" -ge 1 ]; then
+      echo "budget stop kept=$tt_kept" >>"$LOG"
+      break
+    fi
+    [ "$tt_tries" -ge "$FAST_TRIES" ] && break
+    [ "$tt_kept" -ge "$FAST_SHOW" ] && break
+    tt_url=$(printf '%s\n' "$tt_line" | cut -f2 | tr -d '\r')
+    if tt_already_seen "$tt_url"; then
+      tt_mark_checked "$tt_url"
+      echo "fast skip seen $tt_url" >>"$LOG"
+      continue
+    fi
+    tt_mark_checked "$tt_url"
+    case "$tt_url" in
+      https://www.tiktok.com/@*/video/[0-9]*) ;;
+      *) continue ;;
+    esac
+    if tt_title_is_other_lang "$tt_line"; then
+      echo "fast skip lang $tt_url" >>"$LOG"
+      continue
+    fi
+    tt_tries=$((tt_tries + 1))
+    tt_enc=$(enc_form "$tt_url")
+    [ -n "$tt_enc" ] || continue
+    tt_attempt=0
+    tt_tag=""
+    while [ "$tt_attempt" -lt 3 ]; do
+      tt_attempt=$((tt_attempt + 1))
+      if [ "$tt_attempt" -gt 1 ]; then
+        tt_left_secs
+        tt_show_line "STATUS${TT_TAB}Still waiting on this video check. About ${tt_left_out} seconds."
+      else
+        tt_say_check "$tt_tries"
+      fi
+      # TikWM's free check allows about one lookup a second.
+      "$PY" -c 'import time; time.sleep(1.15)'
+      if ! fetch_url "https://www.tikwm.com/api/?hd=0&url=${tt_enc}" 6; then
+        tt_tag="FAIL http"
+        echo "fast confirm http attempt=$tt_attempt $tt_url" >>"$LOG"
+        continue
+      fi
+      cp -f "$TMPF" "$tt_json"
+      tt_verdict=$("$PY" "$tt_py" "$tt_json" "$tt_line" 2>>"$LOG" || true)
+      tt_tag=$(printf '%s' "$tt_verdict" | tr -d '\r\n' | cut -f1)
+      if [ "$tt_tag" = "WAIT" ]; then
+        echo "fast confirm wait attempt=$tt_attempt $tt_url" >>"$LOG"
+        continue
+      fi
+      break
+    done
+    case "$tt_tag" in
+      OK)
+        tt_out=$(printf '%s' "$tt_verdict" | tr -d '\r\n' | cut -f2-)
+        case "$tt_out" in
+          *"tiktok.com/"*)
+            tt_prefix_can_play "$tt_json"
+            tt_pre_rc=$?
+            if [ "$tt_pre_rc" -eq 1 ]; then
+              tt_fail=$((tt_fail + 1))
+              echo "fast prefix reject $tt_url" >>"$LOG"
+            else
+              printf '%s\n' "$tt_out" >>"$tt_ok"
+              tt_kept=$((tt_kept + 1))
+              tt_say_ready "$tt_kept"
+              tt_show_line "$tt_out"
+            fi
+            ;;
+          *)
+            tt_fail=$((tt_fail + 1))
+            ;;
+        esac
+        ;;
+      "FAIL page")
+        tt_hide=$((tt_hide + 1))
+        tt_fail=$((tt_fail + 1))
+        ;;
+      *)
+        tt_fail=$((tt_fail + 1))
+        ;;
+    esac
+    echo "fast confirm try=$tt_tries kept=$tt_kept tag=$tt_tag $tt_url" >>"$LOG"
+  done <"$ROWS"
+  echo "fast confirm done tries=$tt_tries kept=$tt_kept fails=$tt_fail hide=$tt_hide" >>"$LOG"
+  if [ "$tt_kept" -ge 1 ]; then
+    mv -f "$tt_ok" "$ROWS"
+  else
+    : >"$ROWS"
+    rm -f "$tt_ok"
+    if [ "$tt_hide" -ge 3 ]; then
+      challenged=1
+    fi
+  fi
+  rm -f "$tt_json" "$tt_py"
+}
+
+# Stop asking sites once the raw list is full, the clock is up, or the
+# remaining seconds are needed to check files that can already play.
+tt_keep_asking() {
+  tt_ask_n=$(rowcount)
+  [ "$tt_ask_n" -ge "$FAST_CAP" ] && return 1
+  tt_budget_up && return 1
+  tt_ask_left=$(( TT_BUDGET - ($(date +%s) - START) ))
+  if [ "$tt_ask_n" -ge 12 ] && [ "$tt_ask_left" -lt 20 ]; then
+    return 1
+  fi
+  if [ "$tt_ask_n" -ge 1 ] && [ "$tt_ask_left" -lt 12 ]; then
+    return 1
+  fi
+  return 0
+}
+
+tt_fill_startpage() {
+  tt_fill_sp=0
+  tt_fill_before=0
+  tt_fill_npt=""
+  while [ "$tt_fill_sp" -lt 4 ]; do
+    tt_keep_asking || return 0
+    tt_fill_npt=$(sed -n '2p' "$ROWS.four" 2>/dev/null | tr -d '\r\n')
+    [ -n "$tt_fill_npt" ] || return 0
+    tt_fill_before=$(rowcount)
+    tt_say_site "the next Startpage page" "20"
+    tt_pull_next_page
+    tt_fill_sp=$((tt_fill_sp + 1))
+    [ "$(rowcount)" = "$tt_fill_before" ] && return 0
+  done
+}
+
+tt_fill_unseen() {
+  tt_fill_n=0
+  tt_fill_before=0
+  tt_pull_more_unseen
+  [ -n "${MINIOS_TT_WATCHED:-}" ] || return 0
+  [ -s "$MINIOS_TT_WATCHED" ] || return 0
+  while [ "$tt_fill_n" -lt 3 ]; do
+    tt_keep_asking || return 0
+    tt_fill_before=$(rowcount)
+    tt_pull_next_page
+    tt_fill_n=$((tt_fill_n + 1))
+    echo "more unseen extra=$tt_fill_n n=$(rowcount)" >>"$LOG"
+    [ "$(rowcount)" = "$tt_fill_before" ] && return 0
+  done
+}
+
+# vm, vt, and /t/ links are already saved beside the rows. This asks
+# TikWM to turn them into the video pages the check can open.
+tt_resolve_shorts() {
+  tt_res_deadline=0
+  tt_keep_asking || return 0
+  [ -s "$ROWS.maybe" ] || return 0
+  tt_say_site "short links" "15"
+  tt_res_deadline=$(( $(date +%s) + 8 ))
+  "$PY" "$EXPY" resolve "$ROWS" "$ROWS.maybe" "$FAST_CAP" "$tt_res_deadline" >>"$LOG" 2>&1 || true
+  echo "resolve n=$(rowcount)" >>"$LOG"
+  rm -f "$ROWS.maybe"
+}
+
+# The first search keeps every pulled link. More videos checks the ones
+# not shown yet before it reads the web again.
+tt_mark_checked() {
+  [ -n "$1" ] || return 0
+  printf '%s\n' "$1" >>"$CHECKED"
+}
+
+tt_store_pulled() {
+  cp -f "$ROWS" "$PULLED"
+  cp -f "$ROWS" "$LEFT"
+  if [ -z "${MINIOS_TT_WATCHED:-}" ] || [ ! -s "${MINIOS_TT_WATCHED:-}" ]; then
+    : >"$CHECKED"
+    : >"$SHOWN"
+  fi
+  echo "stored pulled n=$(wc -l <"$PULLED" | tr -dc '0-9')" >>"$LOG"
+}
+
+tt_append_pulled() {
+  [ -s "$ROWS" ] || return 0
+  cat "$ROWS" >>"$PULLED"
+  echo "appended pulled n=$(wc -l <"$ROWS" | tr -dc '0-9')" >>"$LOG"
+}
+
+tt_refresh_left() {
+  : >/tmp/minios-tt-left.new
+  if [ -s "$PULLED" ]; then
+    while IFS= read -r tt_pl || [ -n "$tt_pl" ]; do
+      tt_pu=$(printf '%s\n' "$tt_pl" | cut -f2 | tr -d '\r')
+      [ -n "$tt_pu" ] || continue
+      if [ -f "$CHECKED" ] && grep -F -x -q "$tt_pu" "$CHECKED"; then
+        continue
+      fi
+      printf '%s\n' "$tt_pl" >>/tmp/minios-tt-left.new
+    done <"$PULLED"
+  fi
+  mv -f /tmp/minios-tt-left.new "$LEFT"
+  if [ -s "$ROWS" ]; then
+    while IFS= read -r tt_pl || [ -n "$tt_pl" ]; do
+      tt_pu=$(printf '%s\n' "$tt_pl" | cut -f2 | tr -d '\r')
+      [ -n "$tt_pu" ] || continue
+      if [ ! -f "$SHOWN" ] || ! grep -F -x -q "$tt_pu" "$SHOWN"; then
+        printf '%s\n' "$tt_pu" >>"$SHOWN"
+      fi
+    done <"$ROWS"
+  fi
+  echo "left n=$(wc -l <"$LEFT" | tr -dc '0-9')" >>"$LOG"
+}
+
+tt_resume_saved_list() {
+  tt_same_search || return 1
+  [ -s "$PULLED" ] || return 1
+  [ -s "$LEFT" ] || cp -f "$PULLED" "$LEFT"
+  : >"$ROWS"
+  while IFS= read -r tt_pl || [ -n "$tt_pl" ]; do
+    tt_pu=$(printf '%s\n' "$tt_pl" | cut -f2 | tr -d '\r')
+    tt_pv=$(printf '%s\n' "$tt_pu" | sed -n 's|.*/video/\([0-9][0-9]*\).*|\1|p')
+    [ -n "$tt_pv" ] || continue
+    if [ -f "$SHOWN" ] && grep -F "/video/$tt_pv" "$SHOWN" >/dev/null 2>&1; then
+      continue
+    fi
+    if grep -F "/video/$tt_pv" "$MINIOS_TT_WATCHED" >/dev/null 2>&1; then
+      continue
+    fi
+    if [ -f "$CHECKED" ] && grep -F -x -q "$tt_pu" "$CHECKED"; then
+      continue
+    fi
+    printf '%s\n' "$tt_pl" >>"$ROWS"
+  done <"$LEFT"
+  echo "more videos saved list n=$(rowcount)" >>"$LOG"
+  [ "$(rowcount)" -gt 0 ] || return 1
+  tt_say_site "the saved list" "25"
+  tt_confirm_show
+  tt_refresh_left
+  return 0
+}
+
+# More videos already skipped the clips that started. The first Startpage
+# page is those same clips, so it does not fill the list. Ask the other
+# sites before another Startpage page, while time remains to check files.
+tt_more_videos_sites() {
+  [ -n "${MINIOS_TT_WATCHED:-}" ] || return 1
+  [ -s "$MINIOS_TT_WATCHED" ] || return 1
+  echo "more videos other sites" >>"$LOG"
+  if ! tt_budget_up && [ "$(rowcount)" -lt 8 ]; then
+    tt_say_site "DuckDuckGo" "25"
+    tt_more_b=$(enc_form "$Q site:tiktok.com")
+    tt_pull_ddg "$tt_more_b"
+  fi
+  if ! tt_budget_up && [ "$(rowcount)" -lt 8 ]; then
+    tt_say_site "Bing" "20"
+    tt_more_b1=$(enc_form "$Q site:tiktok.com")
+    tt_pull_web "https://www.bing.com/search?q=${tt_more_b1}&count=30&setlang=${MINIOS_LANG:-en}"
+  fi
+  if ! tt_budget_up && [ "$(rowcount)" -lt 8 ]; then
+    tt_say_site "Yahoo" "20"
+    tt_more_b2=$(enc_form "$Q site:tiktok.com")
+    tt_pull_web "https://search.yahoo.com/search?p=${tt_more_b2}&n=20&lang=${MINIOS_LANG:-en}"
+  fi
+  if ! tt_budget_up && [ "$(rowcount)" -lt 8 ]; then
+    tt_say_site "the next Startpage page" "25"
+    tt_pull_next_page
+  fi
+  return 0
+}
+
+# A continue skips a video that was already listed or already played.
+# The slow check is not spent on those again.
+tt_already_seen() {
+  tt_seen_url="$1"
+  tt_seen_id=""
+  tt_same_search || return 1
+  [ -n "$tt_seen_url" ] || return 1
+  tt_seen_id=$(printf '%s\n' "$tt_seen_url" | sed -n 's|.*/video/\([0-9][0-9]*\).*|\1|p')
+  [ -n "$tt_seen_id" ] || return 1
+  if [ -f "$SHOWN" ] && grep -F "/video/$tt_seen_id" "$SHOWN" >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ -n "${MINIOS_TT_WATCHED:-}" ] && [ -f "$MINIOS_TT_WATCHED" ] && \
+     grep -F "/video/$tt_seen_id" "$MINIOS_TT_WATCHED" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+# Skip a link this search already opened. The next page can repeat one.
+tt_drop_checked_rows() {
+  [ -s "$ROWS" ] || return 0
+  : >/tmp/minios-tt-rows.unchecked
+  while IFS= read -r tt_dc || [ -n "$tt_dc" ]; do
+    tt_dcu=$(printf '%s\n' "$tt_dc" | cut -f2 | tr -d '\r')
+    [ -n "$tt_dcu" ] || continue
+    if [ -f "$CHECKED" ] && grep -F -x -q "$tt_dcu" "$CHECKED"; then
+      continue
+    fi
+    printf '%s\n' "$tt_dc" >>/tmp/minios-tt-rows.unchecked
+  done <"$ROWS"
+  mv -f /tmp/minios-tt-rows.unchecked "$ROWS"
+}
+
+# A new word can finish with only a few videos when other languages are
+# dropped. The videos already shown stay. One next page is checked, then
+# another, until 16 videos are ready or the chosen seconds are nearly gone.
+# A page with no new links is the stop. 15, 30, 45, and 60 are not the same.
+tt_fill_short_list() {
+  tt_fill_round=0
+  tt_fill_now=0
+  tt_fill_secs=0
+  tt_fill_after=0
+  tt_same_search && return 0
+  echo "fill until budget=$TT_BUDGET" >>"$LOG"
+  while [ "$tt_fill_round" -lt 12 ]; do
+    tt_fill_now=$(rowcount)
+    [ "$tt_fill_now" -ge "$FAST_SHOW" ] && return 0
+    tt_budget_up && return 0
+    tt_fill_secs=$(( TT_BUDGET - ($(date +%s) - START) ))
+    [ "$tt_fill_secs" -lt 8 ] && return 0
+    echo "short fill round=$tt_fill_round have=$tt_fill_now secs=$tt_fill_secs" >>"$LOG"
+    if [ -s "$ROWS" ]; then
+      cp -f "$ROWS" /tmp/minios-tt-short-hold.txt
+    else
+      : >/tmp/minios-tt-short-hold.txt
+    fi
+    tt_more_next_step
+    tt_drop_checked_rows
+    if [ "$(rowcount)" -lt 1 ]; then
+      mv -f /tmp/minios-tt-short-hold.txt "$ROWS"
+      echo "short fill empty" >>"$LOG"
+      rm -f /tmp/minios-tt-short-hold.txt
+      return 0
+    fi
+    tt_append_pulled
+    tt_confirm_show
+    if [ -s "$ROWS" ]; then
+      cat "$ROWS" >>/tmp/minios-tt-short-hold.txt
+    fi
+    mv -f /tmp/minios-tt-short-hold.txt "$ROWS"
+    tt_refresh_left
+    tt_fill_after=$(rowcount)
+    echo "short fill grew=$tt_fill_after" >>"$LOG"
+    tt_fill_round=$((tt_fill_round + 1))
+  done
+  rm -f /tmp/minios-tt-short-hold.txt
+}
+
+# More videos and Go search with the same words. Hits not yet shown are
+# checked first. The chosen seconds keep the search going. A page with
+# no new links is the stop.
+tt_more_keep_going() {
+  tt_more_round=0
+  tt_more_now=0
+  tt_more_secs=0
+  tt_more_got=0
+  tt_more_after=0
+  tt_same_search || return 0
+  echo "more until budget=$TT_BUDGET" >>"$LOG"
+  while [ "$tt_more_round" -lt 12 ]; do
+    tt_more_now=$(rowcount)
+    [ "$tt_more_now" -ge "$FAST_SHOW" ] && return 0
+    tt_budget_up && return 0
+    tt_more_secs=$(( TT_BUDGET - ($(date +%s) - START) ))
+    [ "$tt_more_secs" -lt 8 ] && return 0
+    echo "more keep round=$tt_more_round have=$tt_more_now secs=$tt_more_secs" >>"$LOG"
+    if [ -s "$ROWS" ]; then
+      cp -f "$ROWS" /tmp/minios-tt-more-hold.txt
+    else
+      : >/tmp/minios-tt-more-hold.txt
+    fi
+    tt_more_got=0
+    if tt_resume_saved_list; then
+      tt_more_got=$(rowcount)
+    fi
+    if [ "$tt_more_got" -lt 1 ]; then
+      tt_more_next_step
+      tt_drop_checked_rows
+      if [ "$(rowcount)" -lt 1 ]; then
+        mv -f /tmp/minios-tt-more-hold.txt "$ROWS"
+        echo "more keep empty" >>"$LOG"
+        rm -f /tmp/minios-tt-more-hold.txt
+        return 0
+      fi
+      tt_append_pulled
+      tt_confirm_show
+    fi
+    if [ -s "$ROWS" ]; then
+      cat "$ROWS" >>/tmp/minios-tt-more-hold.txt
+    fi
+    mv -f /tmp/minios-tt-more-hold.txt "$ROWS"
+    tt_refresh_left
+    tt_more_after=$(rowcount)
+    echo "more keep grew=$tt_more_after" >>"$LOG"
+    tt_more_round=$((tt_more_round + 1))
+  done
+  rm -f /tmp/minios-tt-more-hold.txt
+}
+
+search_fast_show() {
+  tt_page_base=""
+  tt_page_qenc=""
+  tt_page_scraper=""
+  TT_TAB=$(printf '\t')
+  tt_pick_budget "$TT_BUDGET_ARG"
+  tt_note_lang
+  tt_saved_done=0
+  if ! tt_same_search; then
+    rm -f "$PULLED" "$LEFT" "$SHOWN" "$CHECKED" /tmp/minios-tt-held.txt \
+      /tmp/minios-tt-page.txt /tmp/minios-tt-moresite.txt
+  fi
+  if tt_same_search; then
+    echo "more videos cap=$FAST_CAP" >>"$LOG"
+    if tt_resume_saved_list; then
+      tt_saved_done=1
+    fi
+  fi
+  tt_need_web=0
+  if [ "$tt_saved_done" -eq 0 ]; then
+    tt_need_web=1
+  elif [ ! -s "$LEFT" ] && ! tt_budget_up && [ "$(rowcount)" -lt 8 ]; then
+    tt_need_web=1
+    if [ -s "$ROWS" ]; then
+      cp -f "$ROWS" /tmp/minios-tt-held.txt
+    else
+      rm -f /tmp/minios-tt-held.txt
+    fi
+    : >"$ROWS"
+  fi
+  if [ "$tt_need_web" -eq 1 ]; then
+  if tt_same_search; then
+    echo "same search continue" >>"$LOG"
+    tt_more_next_step
+  else
+  tt_say_site "Startpage" "$TT_BUDGET"
+  echo "search_fast_show q=$Q budget=$TT_BUDGET" >>"$LOG"
+  tt_q=$(enc_form "site:tiktok.com $Q")
+  tt_pull_startpage "$tt_q" startpage
+  if ! tt_more_videos_sites; then
+  if ! tt_budget_up && [ "$(rowcount)" -lt 12 ]; then
+    tt_say_site "the next Startpage page" "25"
+    tt_pull_next_page
+  fi
+  tt_pull_more_unseen
+  if ! tt_budget_up && [ "$(rowcount)" -lt 8 ]; then
+    tt_say_site "DuckDuckGo" "25"
+    tt_b=$(enc_form "$Q site:tiktok.com")
+    tt_pull_ddg "$tt_b"
+  fi
+  if ! tt_budget_up && [ "$(rowcount)" -lt 8 ]; then
+    tt_say_site "Bing" "20"
+    tt_b1=$(enc_form "$Q site:tiktok.com")
+    tt_pull_web "https://www.bing.com/search?q=${tt_b1}&count=30&setlang=${MINIOS_LANG:-en}"
+  fi
+  if ! tt_budget_up && [ "$(rowcount)" -lt 8 ]; then
+    tt_say_site "Yahoo" "20"
+    tt_b2=$(enc_form "$Q site:tiktok.com")
+    tt_pull_web "https://search.yahoo.com/search?p=${tt_b2}&n=20&lang=${MINIOS_LANG:-en}"
+  fi
+  fi
+  fi
+  if [ "$tt_saved_done" -eq 0 ]; then
+    tt_store_pulled
+  else
+    tt_append_pulled
+  fi
+  if [ "$(rowcount)" -gt 0 ]; then
+    tt_confirm_show
+  fi
+  if [ -s /tmp/minios-tt-held.txt ]; then
+    cat "$ROWS" >>/tmp/minios-tt-held.txt
+    mv -f /tmp/minios-tt-held.txt "$ROWS"
+  fi
+  tt_refresh_left
+  tt_fill_short_list
+  fi
+  tt_more_keep_going
+}
+
+search_fast_show
+
+n=$(rowcount)
+echo "final n=$n challenged=$challenged secs=$(( $(date +%s) - START ))" >>"$LOG"
+if [ "$n" -lt 1 ]; then
+  if [ "$challenged" = 1 ]; then
+    echo blocked >"$REASON"
+  else
+    echo empty >"$REASON"
+  fi
+  echo "no rows challenged=$challenged" >>"$LOG"
+  exit 1
+fi
+cp -f "$ROWS" /tmp/minios-tt-last.txt
+exit 0

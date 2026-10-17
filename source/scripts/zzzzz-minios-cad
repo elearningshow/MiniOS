@@ -1,0 +1,22 @@
+#!/bin/sh
+# Grab Control+Alt+Delete / Backspace for the reset menu. Start the CPU/RAM strip.
+export DISPLAY="${DISPLAY:-:0}"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+i=0
+while [ "$i" -lt 15 ]; do
+  [ -e /tmp/.X11-unix/X0 ] && break
+  i=$((i + 1))
+  sleep 1
+done
+if [ -x /opt/minios/minios-cad ]; then
+  if ! pgrep -f minios-cad >/dev/null 2>&1; then
+    /opt/minios/minios-cad --watch >/tmp/minios-cad-watch.log 2>&1 &
+  fi
+fi
+if [ -x /opt/minios/minios-resmon ]; then
+  if ! pgrep -x minios-rsmon >/dev/null 2>&1 && \
+     ! pgrep -f minios-resmon >/dev/null 2>&1; then
+    /opt/minios/minios-resmon >/tmp/minios-resmon-start.log 2>&1 &
+  fi
+fi
+exit 0

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Dock icons only. Swap file is created in bootlocal before X.
+# Write the icon list, including AI, then return. Do not load AI here.
+/opt/minios/swap-wbar.sh >/tmp/minios-swap-wbar.log 2>&1
+(
+  sleep 2
+  /opt/minios/swap-activate.sh
+) >/tmp/minios-swap-activate.log 2>&1 &
