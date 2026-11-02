@@ -1,4 +1,4 @@
-# MiniOS
+# MiniOS Xperience
 
 ![MiniOS desktop](source/wallpaper/mini-os-bg.jpg)
 
