@@ -1,5 +1,7 @@
 # MiniOS Xperience
 
+Very easy to use, download the .img file.  Then burn that file with Rufus to a USB.  The entire OS will run off the USB Drive and your old system will be able to access (YouTube, TikTok, AI Chat and more).  Pretty good for a computer that would normally be considered e-waste!
+
 ![MiniOS desktop](source/wallpaper/mini-os-bg.jpg)
 
 MiniOS Xperience is a live USB system for an old 32-bit PC, built on Tiny Core Linux 16.2. It starts from the stick and does not install onto the internal hard drive. It was built for a Gateway MA3: one 32-bit core, about 441 MB of working memory, and no hardware video decoder.
